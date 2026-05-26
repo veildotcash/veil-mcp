@@ -1,0 +1,68 @@
+{
+  "name": "@veil-cash/mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Veil Cash SDK with Base MCP-compatible calldata preparation",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "veil-mcp": "./dist/index.cjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "prepare": "npm run build",
+    "start": "node dist/index.cjs",
+    "inspect": "npx @modelcontextprotocol/inspector node dist/index.cjs"
+  },
+  "keywords": [
+    "veil",
+    "veil-cash",
+    "base",
+    "mcp",
+    "model-context-protocol",
+    "privacy",
+    "ethereum",
+    "zk"
+  ],
+  "author": "Veil Cash",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/veildotcash/veil-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/veildotcash/veil-mcp/issues"
+  },
+  "homepage": "https://github.com/veildotcash/veil-mcp#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@veil-cash/sdk": "^0.6.5",
+    "dotenv": "^17.2.3",
+    "viem": "^2.33.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.17.2",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2"
+  }
+}
