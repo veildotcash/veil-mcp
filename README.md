@@ -4,22 +4,9 @@ Local MCP server for Veil Cash on Base.
 
 This server wraps `@veil-cash/sdk` and exposes Base MCP-compatible tools for agents. Public wallet actions return unsigned calldata for Base MCP `send_calls`; private actions use the local Veil key and submit through the Veil relay only when explicitly confirmed.
 
-## Install From GitHub
-
-```bash
-npm install -g github:veildotcash/veil-mcp
-```
-
-For local development:
-
-```bash
-npm install
-npm run build
-```
-
 ## MCP Config
 
-Run Veil MCP beside Base MCP:
+Run Veil MCP beside Base MCP. MCP clients can install and run this repo directly from GitHub with `npx`:
 
 ```json
 {
@@ -33,6 +20,15 @@ Run Veil MCP beside Base MCP:
     }
   }
 }
+```
+
+When installed from GitHub, npm runs the package `prepare` script to build `dist/index.cjs` before the MCP client starts the server. The same package can be published to npm later without changing the MCP server code.
+
+## Local Development
+
+```bash
+npm install
+npm run build
 ```
 
 For a local checkout:
@@ -50,8 +46,6 @@ For a local checkout:
   }
 }
 ```
-
-When installed from GitHub, npm runs the package `prepare` script to build `dist/index.cjs` before the MCP client starts the server. The same package can be published to npm later without changing the MCP server code.
 
 ## Environment
 
