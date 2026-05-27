@@ -45,14 +45,12 @@ The GitHub install form, `npx -y github:veildotcash/veil-mcp`, is intended for d
 
 ### Hermes Agent config.yaml
 
-For [Hermes Agent](https://hermes-agent.nousresearch.com) users, add the following to your `config.yaml`. The `connect_timeout` gives headroom for the stdio process to spawn and complete the MCP handshake (~1.6s cold start), and `timeout: 120` accommodates longer-running tools like `veil_wait_for_deposit`:
+[Hermes Agent](https://hermes-agent.nousresearch.com) users can add Veil MCP as a stdio server in `config.yaml`:
 
 ```yaml
 mcp_servers:
   veil:
     command: veil-mcp
-    connect_timeout: 10
-    timeout: 120
 ```
 
 ## Local Development
