@@ -12,6 +12,8 @@ Veil Cash is a privacy pool for ETH and USDC on Base mainnet. Veil MCP prepares 
 
 Supported chain: Base mainnet (`8453`, Base MCP chain name `base`).
 
+If another Veil skill from `@veil-cash/sdk` is available, treat it as CLI-specific reference only. This plugin is the authority for Base MCP use: do not switch to CLI signing modes, Bankr flows, or direct SDK transaction submission.
+
 ## Setup
 
 Run Base MCP and Veil MCP side by side:
@@ -31,6 +33,8 @@ Run Base MCP and Veil MCP side by side:
 When installed from GitHub, npm runs the package `prepare` script to build the local `veil-mcp` binary before the MCP client starts it.
 
 Veil keys are local. Base Account smart wallets do not reliably provide the plain `personal_sign` signature needed for Veil's deterministic key derivation, so v1 uses a random local Veil key. If `veil_status` shows no Veil key, call `veil_init_keypair`.
+
+`RPC_URL` is optional and defaults to `https://mainnet.base.org`. Recommend a dedicated Base RPC endpoint because Veil balance and proof-building flows pull Merkle tree data, historical events, queue state, and wallet balances, which can hit public RPC rate limits. A dedicated RPC can also reduce metadata exposure, but it does not replace Base MCP: Veil MCP still prepares public wallet calls, and Base MCP still submits them with `send_calls`.
 
 ## Read Tools
 
@@ -91,9 +95,10 @@ Registration:
 1. Base MCP get_wallets -> owner
 2. Veil MCP veil_status({ owner })
 3. If missing local Veil key, call veil_init_keypair({})
-4. Veil MCP veil_prepare_register({ owner })
-5. Base MCP send_calls({ chain: "base", calls })
-6. Base MCP get_request_status(requestId)
+4. Veil MCP veil_status({ owner }) to confirm key and registration state
+5. Veil MCP veil_prepare_register({ owner })
+6. Base MCP send_calls({ chain: "base", calls })
+7. Base MCP get_request_status(requestId)
 ```
 
 Deposit:
@@ -115,11 +120,29 @@ Private withdraw or transfer:
 
 ```text
 1. Ask the user to explicitly confirm the relay-backed private action.
-2. Call veil_withdraw(..., confirm: true) or veil_transfer(..., confirm: true).
-3. Report only transaction hash, block number, asset, amount, recipient, and success.
+2. For private transfers, verify the recipient is registered if that is not already known.
+3. Call veil_withdraw(..., confirm: true) or veil_transfer(..., confirm: true).
+4. Report only transaction hash, block number, asset, amount, recipient, and success.
 ```
 
 Do not route private relay actions through Base MCP `send_calls`.
+
+Subaccounts:
+
+```text
+1. Call veil_subaccount_status({ slot }) for slot status only.
+2. Valid slots are 0 through 2.
+3. If the user asks to deploy, sweep, merge, or recover subaccounts, explain that v1 of this MCP only exposes status.
+```
+
+## Error Guidance
+
+- Missing local Veil key: call `veil_init_keypair` or ask the user to provide `VEIL_KEY` in `.env.veil`.
+- Missing deposit key: call `veil_init_keypair`; do not invent or request raw private key material from the user.
+- Different registered deposit key: ask before retrying `veil_prepare_register` with `force: true`, because it prepares a key rotation.
+- Invalid amount: ETH minimum is `0.01`; USDC minimum is `10`.
+- RPC/network failure: retry when appropriate and suggest setting `RPC_URL` to a dedicated Base RPC, especially when Merkle tree or event reads appear rate-limited.
+- Relay failure: check `veil_status` relay health and do not resubmit private actions without user confirmation.
 
 ## Safety Rules
 

@@ -58,7 +58,13 @@ The server loads `.env.veil` first, then `.env`, matching the Veil CLI conventio
 | `RPC_URL` | Optional Base RPC URL, defaults to `https://mainnet.base.org` |
 | `RELAY_URL` | Optional Veil relay URL override |
 
+Configure `RPC_URL` with a dedicated Base RPC endpoint for reliable Veil reads. Private balance and proof-building flows pull Merkle tree data, historical events, queue state, and wallet balances, which can exceed public RPC rate limits. A dedicated RPC can also reduce metadata exposure, but it does not replace Base MCP: public wallet actions should still be prepared by Veil MCP and submitted through Base MCP `send_calls`.
+
 Use `veil_init_keypair` to generate a random local Veil keypair. It writes `.env.veil` and returns only the public deposit key.
+
+## Agent Skill
+
+This package includes the MCP-specific agent skill in `skills/veil-base-mcp`. If an agent also discovers the `@veil-cash/sdk` skill, treat that SDK skill as CLI-specific. For Base MCP integrations, follow `skills/veil-base-mcp`: Veil MCP prepares public wallet calldata, Base MCP submits it, and private withdraw/transfer actions go through the Veil relay only after explicit confirmation.
 
 ## Tools
 
@@ -100,4 +106,4 @@ Use `veil_deposit_status({ owner, pool, nonce })` when you know the queue nonce,
 
 ## Safety
 
-MCP responses never include `VEIL_KEY`, wallet private keys, proof arguments, nullifiers, encrypted outputs, or private relay internals. `veil_withdraw` and `veil_transfer` require `confirm: true` because they submit through the Veil relay rather than Base MCP approval links.
+MCP responses never include `VEIL_KEY`, wallet private keys, proof arguments, nullifiers, encrypted outputs, or private relay internals. `veil_withdraw` and `veil_transfer` require `confirm: true` because they submit through the Veil relay rather than Base MCP approval links. Before a private transfer, verify that the recipient is registered for Veil.
