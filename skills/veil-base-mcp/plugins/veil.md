@@ -16,7 +16,24 @@ If another Veil skill from `@veil-cash/sdk` is available, treat it as CLI-specif
 
 ## Setup
 
-Run Base MCP and Veil MCP side by side:
+Run Base MCP and Veil MCP side by side. For Hermes and other MCP clients that discover tools during startup, install Veil MCP globally so the client can launch the binary directly:
+
+```bash
+npm install -g @veil-cash/mcp
+```
+
+```json
+{
+  "mcpServers": {
+    "base-mcp": { "url": "https://mcp.base.org" },
+    "veil": {
+      "command": "veil-mcp"
+    }
+  }
+}
+```
+
+As a fallback, use the published npm package through `npx`:
 
 ```json
 {
@@ -24,13 +41,13 @@ Run Base MCP and Veil MCP side by side:
     "base-mcp": { "url": "https://mcp.base.org" },
     "veil": {
       "command": "npx",
-      "args": ["-y", "github:veildotcash/veil-mcp"]
+      "args": ["-y", "@veil-cash/mcp"]
     }
   }
 }
 ```
 
-When installed from GitHub, npm runs the package `prepare` script to build the local `veil-mcp` binary before the MCP client starts it.
+Use `npx -y github:veildotcash/veil-mcp` only for development or nightly testing. GitHub package resolution can slow MCP client startup because tool discovery waits for the subprocess to launch.
 
 Veil keys are local. Base Account smart wallets do not reliably provide the plain `personal_sign` signature needed for Veil's deterministic key derivation, so v1 uses a random local Veil key. If `veil_status` shows no Veil key, call `veil_init_keypair`.
 

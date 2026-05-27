@@ -6,7 +6,26 @@ This server wraps `@veil-cash/sdk` and exposes Base MCP-compatible tools for age
 
 ## MCP Config
 
-Run Veil MCP beside Base MCP. MCP clients can install and run this repo directly from GitHub with `npx`:
+Run Veil MCP beside Base MCP. For Hermes and other MCP clients that start tools during session startup, install the CLI globally so the client can launch `veil-mcp` directly:
+
+```bash
+npm install -g @veil-cash/mcp
+```
+
+```json
+{
+  "mcpServers": {
+    "base-mcp": {
+      "url": "https://mcp.base.org"
+    },
+    "veil": {
+      "command": "veil-mcp"
+    }
+  }
+}
+```
+
+As a fallback, MCP clients can run the published npm package with `npx`:
 
 ```json
 {
@@ -16,13 +35,13 @@ Run Veil MCP beside Base MCP. MCP clients can install and run this repo directly
     },
     "veil": {
       "command": "npx",
-      "args": ["-y", "github:veildotcash/veil-mcp"]
+      "args": ["-y", "@veil-cash/mcp"]
     }
   }
 }
 ```
 
-When installed from GitHub, npm runs the package `prepare` script to build `dist/index.cjs` before the MCP client starts the server. The same package can be published to npm later without changing the MCP server code.
+The GitHub install form, `npx -y github:veildotcash/veil-mcp`, is intended for development or nightly testing only. It can add startup latency because npm must resolve the GitHub package before the MCP client can discover tools.
 
 ## Local Development
 

@@ -7,7 +7,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "veil-mcp": "./dist/index.cjs"
+    "veil-mcp": "dist/index.cjs"
   },
   "exports": {
     ".": {
@@ -44,7 +44,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/veildotcash/veil-mcp.git"
+    "url": "git+https://github.com/veildotcash/veil-mcp.git"
   },
   "bugs": {
     "url": "https://github.com/veildotcash/veil-mcp/issues"
