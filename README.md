@@ -43,6 +43,17 @@ As a fallback, MCP clients can run the published npm package with `npx`:
 
 The GitHub install form, `npx -y github:veildotcash/veil-mcp`, is intended for development or nightly testing only. It can add startup latency because npm must resolve the GitHub package before the MCP client can discover tools.
 
+### Hermes Agent config.yaml
+
+[Hermes Agent](https://hermes-agent.nousresearch.com) users can add Veil MCP as a stdio server in `config.yaml`. Hermes defaults `connect_timeout` to 60 seconds; veil-mcp completes the stdio handshake in ~1.7s on cold start, so 10 seconds is a tighter but comfortable limit:
+
+```yaml
+mcp_servers:
+  veil:
+    command: veil-mcp
+    connect_timeout: 10
+```
+
 ## Local Development
 
 ```bash
