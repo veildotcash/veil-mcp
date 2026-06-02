@@ -19,6 +19,7 @@ import {
   payX402,
   prepareDeposit,
   prepareRegister,
+  quoteX402,
   subaccountStatus,
   veilStatus,
   waitForDeposit,
@@ -209,13 +210,53 @@ server.registerTool(
         .regex(/^\d+(\.\d+)?$/, 'maxPayment must be a positive USDC decimal string, e.g. "0.10".')
         .optional()
         .describe('Maximum USDC to pay, as a decimal string like "0.10". Defaults to and is hard-capped at 10 USDC.'),
+      payerIndex: z
+        .string()
+        .regex(/^\d+$/, 'payerIndex must be a non-negative integer string.')
+        .optional()
+        .describe('Reuse an already-funded payer EOA at this index (no new withdrawal). Use after a reuse_available result or to retry a funded-but-failed payment.'),
+      forceFresh: z
+        .boolean()
+        .default(false)
+        .describe('Skip the funded-payer reuse check and always withdraw to a new payer EOA.'),
       confirm: z
         .boolean()
         .describe('Must be true after the user explicitly confirms private USDC payment.'),
     },
   },
-  async ({ url, method, body, headers, maxPayment, confirm }) =>
-    jsonResult(await payX402({ url, method, body, headers, maxPayment, confirm })),
+  async ({ url, method, body, headers, maxPayment, payerIndex, forceFresh, confirm }) =>
+    jsonResult(await payX402({ url, method, body, headers, maxPayment, payerIndex, forceFresh, confirm })),
+);
+
+server.registerTool(
+  'veil_x402_quote',
+  {
+    title: 'Quote x402 Resource',
+    description:
+      'Probe an x402 resource WITHOUT funding a payer or paying. Returns the price and payment requirement for a supported 402, or the raw status/body otherwise. Use before veil_pay_x402 to validate the request (method/body/headers) and confirm cost. Note: a merchant that only validates the request body after payment will still return 402 here.',
+    inputSchema: {
+      url: z.string().url().describe('x402-protected resource URL.'),
+      method: z
+        .enum(['GET', 'POST'])
+        .default('GET')
+        .describe('HTTP method for the resource request.'),
+      body: z
+        .union([z.string(), z.record(z.string(), z.unknown())])
+        .optional()
+        .describe('Request body for POST: a JSON object (sent as application/json) or a raw string. Only valid with method POST.'),
+      headers: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe('Optional custom request headers.'),
+      maxPayment: z
+        .string()
+        .regex(/^\d+(\.\d+)?$/, 'maxPayment must be a positive USDC decimal string, e.g. "0.10".')
+        .optional()
+        .describe('Cap to compare the quoted price against. Defaults to and is hard-capped at 10 USDC.'),
+    },
+  },
+  async ({ url, method, body, headers, maxPayment }) =>
+    jsonResult(await quoteX402({ url, method, body, headers, maxPayment })),
 );
 
 server.registerTool(

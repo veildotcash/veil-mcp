@@ -60,6 +60,7 @@ veil_status({ owner? })
 veil_get_balances({ owner, pool?: "eth" | "usdc" | "all" })
 veil_deposit_status({ owner, pool: "eth" | "usdc", nonce })
 veil_wait_for_deposit({ owner, pool: "eth" | "usdc", nonce, timeoutSeconds?, intervalSeconds? })
+veil_x402_quote({ url, method?, body?, headers?, maxPayment? })
 veil_x402_receipts({ limit? })
 veil_x402_payer_balances({ startIndex?, count?, nonZeroOnly? })
 veil_subaccount_status({ slot })
@@ -145,7 +146,7 @@ Private withdraw, transfer, x402 payment, or consolidation:
 ```text
 1. Ask the user to explicitly confirm the relay-backed private action.
 2. For private transfers, verify the recipient is registered if that is not already known.
-3. For x402, confirm the URL, the maxPayment cap, and that private USDC will be withdrawn to a fresh payer EOA.
+3. For x402, optionally veil_x402_quote first to validate the request and price, then confirm the URL, the maxPayment cap, and that private USDC will be withdrawn to a fresh payer EOA. If veil_pay_x402 returns action "reuse_available", ask the user whether to reuse a funded payer (re-call with payerIndex) or withdraw anew (forceFresh: true).
 4. Call veil_withdraw(..., confirm: true), veil_transfer(..., confirm: true), veil_pay_x402(..., confirm: true), or veil_consolidate_utxos(..., confirm: true).
 5. Report only public transaction metadata, amount, payer address, response status/body, and success.
 ```
@@ -155,7 +156,8 @@ Do not route private relay actions through Base MCP `send_calls`.
 x402 payments:
 
 ```text
-veil_pay_x402({ url, method?, body?, headers?, maxPayment?, confirm })
+veil_x402_quote({ url, method?, body?, headers?, maxPayment? })
+veil_pay_x402({ url, method?, body?, headers?, maxPayment?, payerIndex?, forceFresh?, confirm })
 ```
 
 `veil_pay_x402` supports Coinbase-compatible x402 v2 `exact` Base USDC resources.
@@ -170,6 +172,20 @@ more. The cap defaults to and is hard-capped at `10` USDC. Configure
 `X402_RELAY_URL` to the relay x402 route base, for example
 `https://veil-relay.example/x402`; if only `RELAY_URL` is set, Veil MCP appends
 `/x402`.
+
+To avoid burning a withdrawal on a malformed request, `veil_pay_x402` pre-flights
+the endpoint first. If the unpaid probe is not `402` it returns
+`action: "endpoint_error"` (status + body) and withdraws nothing. Use
+`veil_x402_quote(...)` to validate the request and see the price without funding
+or paying. A merchant that validates the body only after payment still returns
+`402` to the probe; the funded payer is then reusable.
+
+Before a fresh withdrawal, `veil_pay_x402` scans already-funded payer EOAs. If one
+holds enough USDC it returns `action: "reuse_available"` with candidate payer
+indexes. Re-call with `payerIndex` to pay from that funded payer with no new
+withdrawal, or `forceFresh: true` to skip the scan and withdraw to a new payer.
+Reuse links both attempts to the same public EOA, so it is offered as a consented
+choice rather than done silently.
 
 Each payment writes a local receipt. Use `veil_x402_receipts({ limit? })` for
 spend history and total USDC spent, and `veil_x402_payer_balances({ startIndex?,

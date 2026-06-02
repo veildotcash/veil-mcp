@@ -38,7 +38,7 @@ Important behavior carried over from the Veil CLI skill:
 - Deposit amounts are net amounts; fee handling is built into the prepare tool.
 - Deposits enter a queue before becoming private balance (typically 8-12 minutes); `veil_deposit_status` reports queue position and ETA.
 - Private transfers require the recipient to already be registered with Veil.
-- x402 payments use private USDC, reserve a fresh deterministic payer index, and support standard Base USDC x402 resources. Always set a tight `maxPayment` cap (default and hard cap 10 USDC); each payment writes a local receipt readable via `veil_x402_receipts`, and `veil_x402_payer_balances` surfaces funds left on a payer.
+- x402 payments use private USDC, reserve a fresh deterministic payer index, and support standard Base USDC x402 (GET and POST) resources. Always set a tight `maxPayment` cap (default and hard cap 10 USDC). `veil_pay_x402` pre-flights the endpoint and withdraws nothing if it does not return 402; use `veil_x402_quote` to validate the request and price first. If a funded payer with enough USDC already exists it returns `reuse_available` so the user can reuse it via `payerIndex` (no new withdrawal) or `forceFresh: true` to withdraw anew. Each payment writes a local receipt readable via `veil_x402_receipts`, and `veil_x402_payer_balances` surfaces funds left on a payer.
 - A single transaction consumes at most 16 input UTXOs; when balances fragment, use `veil_consolidate_utxos` to merge notes via a private self-transfer.
 - Agents should summarize actions in plain language rather than presenting raw calldata.
 - Never expose `VEIL_KEY`, proof internals, nullifiers, encrypted outputs, payer private keys, or signatures.

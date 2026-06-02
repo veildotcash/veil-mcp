@@ -18,6 +18,7 @@ import {
   getX402PayerBalances,
   mergeUtxos,
   payX402Resource,
+  quoteX402Resource,
   transfer,
   withdraw,
 } from '@veil-cash/sdk';
@@ -25,7 +26,7 @@ import { createPublicClient, formatEther, formatUnits, http, parseEther, parseUn
 import { base } from 'viem/chains';
 import { asBaseCall, sendCalls, toHexValue } from './base.js';
 import { DEFAULT_RPC_URL, getRelayUrl, getRpcUrl, getX402RelayUrl } from './env.js';
-import { getKeyStatus, maskHex, requireDepositKey, requireKeypair, reserveX402PayerIndex } from './key-store.js';
+import { getKeyStatus, getX402PayerIndex, maskHex, requireDepositKey, requireKeypair, reserveX402PayerIndex } from './key-store.js';
 import { listX402Receipts, upsertX402Receipt } from './receipts.js';
 import type { X402PayerFundedInfo } from '@veil-cash/sdk';
 import type { Asset, Hex, Pool, SendCallsPayload, StepCall } from './types.js';
@@ -649,12 +650,74 @@ function buildX402RequestInit(options: {
   return { method: 'POST', headers, body };
 }
 
+function resolveEffectiveCap(maxPayment?: string): number {
+  const requestedCap = maxPayment !== undefined ? Number(maxPayment) : X402_MAX_PAYMENT_USDC;
+  if (!Number.isFinite(requestedCap) || requestedCap <= 0) {
+    throw new Error('maxPayment must be a positive USDC amount, e.g. "0.10".');
+  }
+  // Clamp the caller-supplied cap to the protective backstop. A caller can set a
+  // tighter cap, but never a looser one than X402_MAX_PAYMENT_USDC.
+  return Math.min(requestedCap, X402_MAX_PAYMENT_USDC);
+}
+
+export async function quoteX402(options: {
+  url: string;
+  method?: 'GET' | 'POST';
+  body?: string | Record<string, unknown>;
+  headers?: Record<string, string>;
+  maxPayment?: string;
+}): Promise<Record<string, unknown>> {
+  const effectiveCap = resolveEffectiveCap(options.maxPayment);
+  const init = buildX402RequestInit(options);
+
+  const quote = await quoteX402Resource({
+    url: options.url,
+    rpcUrl: getRpcUrl(),
+    maxPayment: String(effectiveCap),
+    init,
+  });
+
+  let note: string;
+  if (!quote.requiresPayment) {
+    note =
+      'Endpoint did not return HTTP 402. Either no payment is required or the request was rejected before payment. Inspect status and body before paying.';
+  } else if (!quote.supported) {
+    note = 'Endpoint requires payment but not via Veil-supported x402 v2 exact Base USDC.';
+  } else if (quote.exceedsMax) {
+    note = 'Price exceeds the maxPayment cap; veil_pay_x402 would reject this.';
+  } else {
+    note =
+      'Quoted successfully. Caveat: a merchant that validates the request body only after payment can still fail veil_pay_x402; if that happens the funded payer is reusable via payerIndex.';
+  }
+
+  return {
+    type: 'x402_quote',
+    url: options.url,
+    method: options.method ?? 'GET',
+    requiresPayment: quote.requiresPayment,
+    supported: quote.supported,
+    status: quote.status,
+    amount: quote.amount ?? null,
+    amountAtomic: quote.amountAtomic ?? null,
+    payTo: quote.payTo ?? null,
+    network: quote.network ?? null,
+    asset: quote.asset ?? null,
+    maxPayment: String(effectiveCap),
+    exceedsMax: quote.exceedsMax ?? null,
+    error: quote.error ?? null,
+    body: quote.body ?? null,
+    note,
+  };
+}
+
 export async function payX402(options: {
   url: string;
   method?: 'GET' | 'POST';
   body?: string | Record<string, unknown>;
   headers?: Record<string, string>;
   maxPayment?: string;
+  payerIndex?: string;
+  forceFresh?: boolean;
   confirm: boolean;
 }): Promise<Record<string, unknown>> {
   if (!options.confirm) {
@@ -667,20 +730,107 @@ export async function payX402(options: {
     throw new Error('VEIL_KEY missing. Call veil_init_keypair first or provide VEIL_KEY in .env.veil.');
   }
 
-  // Clamp the caller-supplied cap to the protective backstop. A caller can set a
-  // tighter cap, but never a looser one than X402_MAX_PAYMENT_USDC.
-  const requestedCap = options.maxPayment !== undefined ? Number(options.maxPayment) : X402_MAX_PAYMENT_USDC;
-  if (!Number.isFinite(requestedCap) || requestedCap <= 0) {
-    throw new Error('maxPayment must be a positive USDC amount, e.g. "0.10".');
-  }
-  const effectiveCap = Math.min(requestedCap, X402_MAX_PAYMENT_USDC);
+  const effectiveCap = resolveEffectiveCap(options.maxPayment);
 
   // Translate the requested method/body/headers into a RequestInit. The SDK
   // forwards this to both the initial 402 probe and the paid retry, and merges
   // the x402 payment header on top of these headers.
   const init = buildX402RequestInit(options);
 
-  const payerIndex = reserveX402PayerIndex();
+  // A caller-supplied payerIndex reuses an already-funded payer EOA (e.g. to
+  // retry a payment whose funding succeeded but whose delivery failed) instead of
+  // burning a fresh withdrawal.
+  const reusePayer = options.payerIndex !== undefined;
+  let payerIndex: bigint;
+  if (reusePayer) {
+    if (!/^\d+$/.test(options.payerIndex as string)) {
+      throw new Error('payerIndex must be a non-negative integer string.');
+    }
+    payerIndex = BigInt(options.payerIndex as string);
+  } else {
+    // Pre-flight probe before funding so a request the merchant rejects before
+    // payment never burns a withdrawal, and so the price can be capped.
+    const quote = await quoteX402Resource({
+      url: options.url,
+      rpcUrl: getRpcUrl(),
+      maxPayment: String(effectiveCap),
+      init,
+    });
+
+    if (!quote.requiresPayment) {
+      return {
+        action: 'endpoint_error',
+        success: false,
+        url: options.url,
+        status: quote.status,
+        body: quote.body ?? null,
+        message:
+          'Endpoint did not return HTTP 402, so no payment was attempted and no funds were withdrawn. Fix the request (or confirm no payment is required) and retry.',
+        type: 'x402_payment',
+      };
+    }
+    if (!quote.supported) {
+      return {
+        action: 'unsupported',
+        success: false,
+        url: options.url,
+        status: quote.status,
+        error: quote.error ?? 'Endpoint does not offer a Veil-supported exact Base USDC payment.',
+        message: 'Veil only pays x402 v2 exact Base USDC. No funds were withdrawn.',
+        type: 'x402_payment',
+      };
+    }
+    if (quote.exceedsMax) {
+      throw new Error(
+        `x402 price of ${quote.amount} USDC exceeds maxPayment cap of ${effectiveCap} USDC. No funds were withdrawn.`,
+      );
+    }
+
+    // Auto-detect an already-funded payer with enough USDC for this payment and
+    // ask the caller to reuse it rather than silently withdrawing again. Scanning
+    // 0..next covers every payer index this MCP has reserved.
+    if (!options.forceFresh) {
+      const requiredAtomic = BigInt(quote.amountAtomic as string);
+      const scanCount = Number(getX402PayerIndex());
+      if (scanCount > 0) {
+        const balances = await getX402PayerBalances({
+          rootPrivateKey: rootPrivateKey as `0x${string}`,
+          startIndex: '0',
+          count: Math.min(scanCount, 256),
+          nonZeroOnly: true,
+          rpcUrl: getRpcUrl(),
+        });
+        const candidates = balances.filter((b) => BigInt(b.usdcAtomic) >= requiredAtomic);
+        if (candidates.length > 0) {
+          const { receipts } = listX402Receipts({ limit: 500 });
+          const labeled = candidates.map((c) => {
+            const receipt = receipts.find((r) => r.payerIndex === c.payerIndex);
+            return {
+              payerIndex: c.payerIndex,
+              payerAddress: c.payerAddress,
+              usdc: c.usdc,
+              usdcAtomic: c.usdcAtomic,
+              fundedFor: receipt?.url ?? null,
+            };
+          });
+          return {
+            action: 'reuse_available',
+            success: false,
+            url: options.url,
+            requiredAmount: quote.amount,
+            requiredAmountAtomic: quote.amountAtomic,
+            candidates: labeled,
+            message:
+              `Found ${labeled.length} already-funded payer(s) holding enough USDC for this ${quote.amount} USDC payment. ` +
+              'Re-call veil_pay_x402 with payerIndex set to reuse one (no new withdrawal), or forceFresh: true to withdraw to a new payer.',
+            type: 'x402_payment',
+          };
+        }
+      }
+    }
+
+    payerIndex = reserveX402PayerIndex();
+  }
 
   // Capture the funded state so a receipt exists even if a later step (signing,
   // the second fetch, settle-header parse, body read) throws and strands funds
@@ -696,6 +846,7 @@ export async function payX402(options: {
       rpcUrl: getRpcUrl(),
       relayUrl: getX402RelayUrl(),
       maxPayment: String(effectiveCap),
+      reuseExistingBalance: reusePayer,
       init,
       onPayerFunded: (info) => {
         fundedInfo = info;
@@ -771,6 +922,7 @@ export async function payX402(options: {
   return {
     success,
     settled,
+    reused: reusePayer,
     status: result.response.status,
     url: options.url,
     maxPayment: String(effectiveCap),

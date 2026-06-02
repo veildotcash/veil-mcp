@@ -113,6 +113,7 @@ This package includes the MCP-specific agent skill in `skills/veil-base-mcp`. If
 | `veil_transfer` | Submit a private transfer through the Veil relay |
 | `veil_consolidate_utxos` | Merge fragmented private UTXOs into fewer notes via a self-transfer |
 | `veil_pay_x402` | Pay a Coinbase-compatible x402 resource from private USDC |
+| `veil_x402_quote` | Probe an x402 resource for price/requirement without funding or paying |
 | `veil_x402_receipts` | List local x402 spend history and total USDC spent |
 | `veil_x402_payer_balances` | Inspect USDC left on deterministic x402 payer EOAs |
 | `veil_subaccount_status` | Read subaccount status |
@@ -164,6 +165,27 @@ returns the paid response body plus a structured `receipt`.
 Both GET and POST resources are supported. Set `method: "POST"` and pass `body`
 (a JSON object, sent as `application/json`, or a raw string) for POST endpoints;
 `headers` adds custom request headers. `body` is only valid with POST.
+
+### Avoiding wasted withdrawals
+
+`veil_pay_x402` pre-flights the endpoint before funding. If the unpaid probe does
+not return `402` (for example a `422` for a malformed body, or a non-payment
+response), it returns `action: "endpoint_error"` with the status and body and
+withdraws nothing. Use `veil_x402_quote({ url, method, body, headers, maxPayment })`
+to validate the request and see the price up front; it never funds or pays.
+
+Note: a merchant that only validates the request body *after* payment will still
+return `402` to the probe. In that case the payer is funded but delivery fails,
+leaving the USDC on the payer EOA. To recover it, retry without a new withdrawal:
+
+- Before a fresh withdrawal, `veil_pay_x402` scans already-funded payer EOAs. If
+  one holds enough USDC for the payment it returns `action: "reuse_available"`
+  with candidate payer indexes instead of withdrawing again.
+- Re-call `veil_pay_x402({ ..., payerIndex })` to pay from that funded payer with
+  no new withdrawal, or pass `forceFresh: true` to withdraw to a brand-new payer.
+
+Reusing a payer links both attempts to the same public EOA; it is offered as a
+consented choice via `reuse_available`, not done silently.
 
 Set a tight `maxPayment` cap (a decimal USDC string such as `"0.10"`) for every
 call. The payment is rejected before any funds move if the resource demands more
