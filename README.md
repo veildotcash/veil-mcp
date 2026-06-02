@@ -155,11 +155,15 @@ response reports `needsAnotherRound: true`.
 
 ## x402 Payments
 
-`veil_pay_x402({ url, maxPayment, confirm })` pays a standard x402 v2 Base USDC
-`exact` resource from the local private USDC balance. It reserves the current
-`X402_PAYER_INDEX`, withdraws the exact payment amount to the deterministic fresh
-payer EOA, signs the x402 payment from that EOA, and returns the paid response
-body plus a structured `receipt`.
+`veil_pay_x402({ url, method, body, headers, maxPayment, confirm })` pays a
+standard x402 v2 Base USDC `exact` resource from the local private USDC balance.
+It reserves the current `X402_PAYER_INDEX`, withdraws the exact payment amount to
+the deterministic fresh payer EOA, signs the x402 payment from that EOA, and
+returns the paid response body plus a structured `receipt`.
+
+Both GET and POST resources are supported. Set `method: "POST"` and pass `body`
+(a JSON object, sent as `application/json`, or a raw string) for POST endpoints;
+`headers` adds custom request headers. `body` is only valid with POST.
 
 Set a tight `maxPayment` cap (a decimal USDC string such as `"0.10"`) for every
 call. The payment is rejected before any funds move if the resource demands more

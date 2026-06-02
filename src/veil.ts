@@ -617,8 +617,43 @@ async function readResponseBody(response: Response): Promise<unknown> {
   return text;
 }
 
+function buildX402RequestInit(options: {
+  method?: 'GET' | 'POST';
+  body?: string | Record<string, unknown>;
+  headers?: Record<string, string>;
+}): RequestInit | undefined {
+  const method = options.method ?? 'GET';
+  const headers: Record<string, string> = { ...(options.headers ?? {}) };
+
+  if (method !== 'POST') {
+    if (options.body !== undefined) {
+      throw new Error('body is only allowed with method POST.');
+    }
+    // Only attach an init when there is something to send.
+    return Object.keys(headers).length > 0 ? { method: 'GET', headers } : undefined;
+  }
+
+  let body: string | undefined;
+  if (options.body !== undefined) {
+    if (typeof options.body === 'string') {
+      body = options.body;
+    } else {
+      body = JSON.stringify(options.body);
+      const hasContentType = Object.keys(headers).some((key) => key.toLowerCase() === 'content-type');
+      if (!hasContentType) {
+        headers['Content-Type'] = 'application/json';
+      }
+    }
+  }
+
+  return { method: 'POST', headers, body };
+}
+
 export async function payX402(options: {
   url: string;
+  method?: 'GET' | 'POST';
+  body?: string | Record<string, unknown>;
+  headers?: Record<string, string>;
   maxPayment?: string;
   confirm: boolean;
 }): Promise<Record<string, unknown>> {
@@ -640,6 +675,11 @@ export async function payX402(options: {
   }
   const effectiveCap = Math.min(requestedCap, X402_MAX_PAYMENT_USDC);
 
+  // Translate the requested method/body/headers into a RequestInit. The SDK
+  // forwards this to both the initial 402 probe and the paid retry, and merges
+  // the x402 payment header on top of these headers.
+  const init = buildX402RequestInit(options);
+
   const payerIndex = reserveX402PayerIndex();
 
   // Capture the funded state so a receipt exists even if a later step (signing,
@@ -656,6 +696,7 @@ export async function payX402(options: {
       rpcUrl: getRpcUrl(),
       relayUrl: getX402RelayUrl(),
       maxPayment: String(effectiveCap),
+      init,
       onPayerFunded: (info) => {
         fundedInfo = info;
         upsertX402Receipt({

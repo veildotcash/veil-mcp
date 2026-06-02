@@ -155,14 +155,17 @@ Do not route private relay actions through Base MCP `send_calls`.
 x402 payments:
 
 ```text
-veil_pay_x402({ url, maxPayment?, confirm })
+veil_pay_x402({ url, method?, body?, headers?, maxPayment?, confirm })
 ```
 
 `veil_pay_x402` supports Coinbase-compatible x402 v2 `exact` Base USDC resources.
 It reserves and increments `X402_PAYER_INDEX` in `.env.veil`, withdraws the exact
 amount from private USDC to a fresh deterministic payer EOA, then signs the x402
-payment from that EOA. Always set a tight `maxPayment` cap (decimal USDC string
-like `"0.10"`); payment is rejected before any funds move if the resource demands
+payment from that EOA. Both GET and POST resources are supported: set
+`method: "POST"` and pass `body` (a JSON object sent as `application/json`, or a
+raw string) for POST endpoints, with optional `headers`. `body` is only valid
+with POST. Always set a tight `maxPayment` cap (decimal USDC string like
+`"0.10"`); payment is rejected before any funds move if the resource demands
 more. The cap defaults to and is hard-capped at `10` USDC. Configure
 `X402_RELAY_URL` to the relay x402 route base, for example
 `https://veil-relay.example/x402`; if only `RELAY_URL` is set, Veil MCP appends

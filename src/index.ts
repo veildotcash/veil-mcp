@@ -189,9 +189,21 @@ server.registerTool(
   {
     title: 'Pay x402 Resource',
     description:
-      'Pay a Coinbase-compatible x402 resource from private Veil USDC. Requires explicit user intent and confirm: true because it withdraws to a fresh payer EOA and submits payment. Set a tight maxPayment cap; the payment is rejected if the resource demands more.',
+      'Pay a Coinbase-compatible x402 resource from private Veil USDC. Supports GET and POST resources. Requires explicit user intent and confirm: true because it withdraws to a fresh payer EOA and submits payment. Set a tight maxPayment cap; the payment is rejected if the resource demands more.',
     inputSchema: {
       url: z.string().url().describe('x402-protected resource URL.'),
+      method: z
+        .enum(['GET', 'POST'])
+        .default('GET')
+        .describe('HTTP method for the resource request.'),
+      body: z
+        .union([z.string(), z.record(z.string(), z.unknown())])
+        .optional()
+        .describe('Request body for POST: a JSON object (sent as application/json) or a raw string. Only valid with method POST.'),
+      headers: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe('Optional custom request headers.'),
       maxPayment: z
         .string()
         .regex(/^\d+(\.\d+)?$/, 'maxPayment must be a positive USDC decimal string, e.g. "0.10".')
@@ -202,7 +214,8 @@ server.registerTool(
         .describe('Must be true after the user explicitly confirms private USDC payment.'),
     },
   },
-  async ({ url, maxPayment, confirm }) => jsonResult(await payX402({ url, maxPayment, confirm })),
+  async ({ url, method, body, headers, maxPayment, confirm }) =>
+    jsonResult(await payX402({ url, method, body, headers, maxPayment, confirm })),
 );
 
 server.registerTool(
