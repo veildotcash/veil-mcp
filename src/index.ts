@@ -9,10 +9,13 @@ import { initRandomKeypair } from './key-store.js';
 import { jsonResult } from './result.js';
 import { addressSchema, assetSchema, poolOrAllSchema, poolSchema } from './validation.js';
 import {
+  consolidateUtxos,
   executeTransfer,
   executeWithdraw,
   getBalances,
   getDepositStatus,
+  getX402PayerBalanceList,
+  getX402Receipts,
   payX402,
   prepareDeposit,
   prepareRegister,
@@ -186,15 +189,74 @@ server.registerTool(
   {
     title: 'Pay x402 Resource',
     description:
-      'Pay a Coinbase-compatible x402 resource from private Veil USDC. Requires explicit user intent and confirm: true because it withdraws to a fresh payer EOA and submits payment.',
+      'Pay a Coinbase-compatible x402 resource from private Veil USDC. Requires explicit user intent and confirm: true because it withdraws to a fresh payer EOA and submits payment. Set a tight maxPayment cap; the payment is rejected if the resource demands more.',
     inputSchema: {
       url: z.string().url().describe('x402-protected resource URL.'),
+      maxPayment: z
+        .string()
+        .regex(/^\d+(\.\d+)?$/, 'maxPayment must be a positive USDC decimal string, e.g. "0.10".')
+        .optional()
+        .describe('Maximum USDC to pay, as a decimal string like "0.10". Defaults to and is hard-capped at 10 USDC.'),
       confirm: z
         .boolean()
         .describe('Must be true after the user explicitly confirms private USDC payment.'),
     },
   },
-  async ({ url, confirm }) => jsonResult(await payX402({ url, confirm })),
+  async ({ url, maxPayment, confirm }) => jsonResult(await payX402({ url, maxPayment, confirm })),
+);
+
+server.registerTool(
+  'veil_x402_receipts',
+  {
+    title: 'x402 Spend History',
+    description:
+      'List locally recorded x402 payment receipts (amount, payer address/index, relay and payment tx hashes, settlement status) and total USDC spent. Read-only; reconstructs this agent\'s own spend history.',
+    inputSchema: {
+      limit: z.number().int().min(1).max(500).default(50).describe('Maximum number of most-recent receipts to return.'),
+    },
+  },
+  async ({ limit }) => jsonResult(getX402Receipts({ limit })),
+);
+
+server.registerTool(
+  'veil_x402_payer_balances',
+  {
+    title: 'x402 Payer Balances',
+    description:
+      'Inspect Base USDC balances held by deterministic x402 payer EOAs over an index range. Surfaces dust or funds left on a payer after a failed payment. Read-only; does not move or reuse funds.',
+    inputSchema: {
+      startIndex: z
+        .string()
+        .regex(/^\d+$/, 'startIndex must be a non-negative integer string.')
+        .default('0')
+        .describe('First payer index to inspect.'),
+      count: z.number().int().min(1).max(256).default(16).describe('How many payer indexes to inspect from startIndex.'),
+      nonZeroOnly: z.boolean().default(false).describe('Only return payers that currently hold USDC.'),
+    },
+  },
+  async ({ startIndex, count, nonZeroOnly }) =>
+    jsonResult(await getX402PayerBalanceList({ startIndex, count, nonZeroOnly })),
+);
+
+server.registerTool(
+  'veil_consolidate_utxos',
+  {
+    title: 'Consolidate Private UTXOs',
+    description:
+      'Merge fragmented private UTXOs into fewer notes via a self-transfer through the Veil relay. A single transaction consumes at most 16 input UTXOs, so heavy x402 usage can fragment a balance until it cannot be spent in full. Requires explicit user intent and confirm: true. May need multiple rounds when more than 16 UTXOs are unspent.',
+    inputSchema: {
+      asset: assetSchema.describe('Asset to consolidate.'),
+      amount: z
+        .string()
+        .regex(/^\d+(\.\d+)?$/, 'amount must be a positive decimal string.')
+        .optional()
+        .describe('Optional target amount to consolidate. Omit to merge as much as possible (up to 16 notes) in one round.'),
+      confirm: z
+        .boolean()
+        .describe('Must be true after the user explicitly confirms relay submission.'),
+    },
+  },
+  async ({ asset, amount, confirm }) => jsonResult(await consolidateUtxos({ asset, amount, confirm })),
 );
 
 server.registerTool(

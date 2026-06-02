@@ -15,6 +15,8 @@ import {
   getQueueAddress,
   getQueueBalance,
   getSubaccountStatus,
+  getX402PayerBalances,
+  mergeUtxos,
   payX402Resource,
   transfer,
   withdraw,
@@ -24,12 +26,25 @@ import { base } from 'viem/chains';
 import { asBaseCall, sendCalls, toHexValue } from './base.js';
 import { DEFAULT_RPC_URL, getRelayUrl, getRpcUrl, getX402RelayUrl } from './env.js';
 import { getKeyStatus, maskHex, requireDepositKey, requireKeypair, reserveX402PayerIndex } from './key-store.js';
+import { listX402Receipts, upsertX402Receipt } from './receipts.js';
+import type { X402PayerFundedInfo } from '@veil-cash/sdk';
 import type { Asset, Hex, Pool, SendCallsPayload, StepCall } from './types.js';
 
 const MINIMUM_NET: Record<Asset, number> = {
   ETH: 0.01,
   USDC: 10,
 };
+
+// Hard ceiling on a single x402 payment, regardless of caller-supplied cap. A
+// protective backstop so an autonomous agent cannot drain large amounts if a
+// merchant raises prices unexpectedly. Callers should still set a tighter
+// per-request maxPayment.
+const X402_MAX_PAYMENT_USDC = 10;
+
+// The pool's transaction16 circuit caps a single transaction at 16 input UTXOs.
+// Beyond this, a full-balance withdraw/payment cannot be built without first
+// consolidating.
+const MAX_INPUT_UTXOS = 16;
 
 const DEPOSIT_STATUS_MAP: Record<number, 'pending' | 'accepted' | 'rejected' | 'refunded'> = {
   0: 'pending',
@@ -177,6 +192,32 @@ export async function veilStatus(owner?: Hex): Promise<Record<string, unknown>> 
   };
 }
 
+interface UtxoDetail {
+  index: number;
+  amount: string;
+  amountWei: string;
+  isSpent: boolean;
+}
+
+function summarizeFragmentation(utxos: UtxoDetail[], pool: Pool): Record<string, unknown> {
+  const unspent = utxos.filter((u) => !u.isSpent);
+  const sorted = [...unspent].sort((a, b) => (BigInt(b.amountWei) > BigInt(a.amountWei) ? 1 : -1));
+  const decimals = POOL_CONFIG[pool].decimals;
+
+  return {
+    unspentCount: unspent.length,
+    maxInputsPerTransaction: MAX_INPUT_UTXOS,
+    // A single withdraw/transfer/payment can consume at most MAX_INPUT_UTXOS
+    // notes, so a balance fragmented beyond that cannot be spent in full until
+    // consolidated via veil_consolidate_utxos.
+    needsConsolidation: unspent.length > MAX_INPUT_UTXOS,
+    largestUtxo: sorted.length > 0 ? sorted[0].amount : null,
+    smallestUtxo: sorted.length > 0 ? sorted[sorted.length - 1].amount : null,
+    unspentUtxos: sorted.map((u) => ({ index: u.index, amount: u.amount, amountWei: u.amountWei })),
+    decimals,
+  };
+}
+
 export async function getBalances(options: {
   owner: Hex;
   pool?: Pool | 'all';
@@ -212,6 +253,7 @@ export async function getBalances(options: {
               utxoCount: privateBalance.utxoCount,
               unspentCount: privateBalance.unspentCount,
               spentCount: privateBalance.spentCount,
+              fragmentation: summarizeFragmentation(privateBalance.utxos, pool),
             }
           : {
               balance: null,
@@ -258,6 +300,27 @@ export async function getDepositStatus(options: {
   const status = DEPOSIT_STATUS_MAP[deposit.status] || 'pending';
   const belongsToOwner = deposit.fallbackReceiver.toLowerCase() === options.owner.toLowerCase();
 
+  // For still-pending deposits, surface the position in the processing queue and
+  // a typical processing time so an agent can decide how long to wait.
+  let queuePosition: number | null = null;
+  let queueLength: number | null = null;
+  if (status === 'pending') {
+    try {
+      const pendingNonces = (await publicClient().readContract({
+        address: queueAddress,
+        abi: QUEUE_ABI,
+        functionName: 'getPendingDeposits',
+      })) as bigint[];
+      queueLength = pendingNonces.length;
+      const idx = pendingNonces.findIndex((n) => n.toString() === options.nonce);
+      // 1-based position; deposits are processed in FIFO order.
+      queuePosition = idx >= 0 ? idx + 1 : null;
+    } catch {
+      queuePosition = null;
+      queueLength = null;
+    }
+  }
+
   return {
     chain: 'base',
     owner: options.owner,
@@ -267,6 +330,9 @@ export async function getDepositStatus(options: {
     belongsToOwner,
     status,
     terminal: status !== 'pending',
+    queuePosition,
+    queueLength,
+    typicalProcessingMinutes: status === 'pending' ? '8-12' : null,
     amountIn: formatUnits(deposit.amountIn, poolConfig.decimals),
     amountInWei: deposit.amountIn.toString(),
     fee: formatUnits(deposit.fee, poolConfig.decimals),
@@ -456,6 +522,85 @@ export async function executeTransfer(options: {
   };
 }
 
+export async function consolidateUtxos(options: {
+  asset: Asset;
+  amount?: string;
+  confirm: boolean;
+}): Promise<Record<string, unknown>> {
+  if (!options.confirm) {
+    throw new Error('Consolidation submits a self-transfer through the Veil relay. Re-call with confirm: true after explicit user approval.');
+  }
+
+  const keypair = requireKeypair();
+  const pool = options.asset.toLowerCase() as Pool;
+  const rpcUrl = getRpcUrl();
+  const decimals = POOL_CONFIG[pool].decimals;
+
+  const balance = await getPrivateBalance({ keypair, pool, rpcUrl });
+  const unspent = balance.utxos.filter((u) => !u.isSpent);
+  if (unspent.length < 2) {
+    throw new Error('Nothing to consolidate: need at least 2 unspent UTXOs.');
+  }
+
+  // Largest-first to mirror the SDK UTXO selection ordering so a target amount
+  // selects a predictable set of notes.
+  const sorted = [...unspent].sort((a, b) => (BigInt(b.amountWei) > BigInt(a.amountWei) ? 1 : -1));
+
+  let amount: string;
+  let mergedInputs: number;
+  if (options.amount !== undefined) {
+    amount = options.amount;
+    // Estimate how many notes a largest-first selection will consume to surface
+    // the 16-input ceiling before submitting.
+    const targetWei = parseUnits(options.amount, decimals);
+    let acc = 0n;
+    mergedInputs = 0;
+    for (const u of sorted) {
+      acc += BigInt(u.amountWei);
+      mergedInputs++;
+      if (acc >= targetWei) break;
+    }
+    if (acc < targetWei) {
+      throw new Error(`Insufficient unspent balance to consolidate ${options.amount} ${options.asset}.`);
+    }
+    if (mergedInputs > MAX_INPUT_UTXOS) {
+      throw new Error(
+        `Consolidating ${options.amount} ${options.asset} needs ${mergedInputs} input UTXOs, above the ${MAX_INPUT_UTXOS}-input limit. Consolidate a smaller amount first.`,
+      );
+    }
+  } else {
+    // No target: consolidate as much as possible in one round, capped at the
+    // 16-input circuit limit. Merge the largest notes so each round reduces the
+    // unspent count by up to 15.
+    const cap = Math.min(MAX_INPUT_UTXOS, unspent.length);
+    const selected = sorted.slice(0, cap);
+    let sumWei = 0n;
+    for (const u of selected) sumWei += BigInt(u.amountWei);
+    amount = formatUnits(sumWei, decimals);
+    mergedInputs = cap;
+  }
+
+  const result = await mergeUtxos({ amount, keypair, pool, rpcUrl });
+
+  const unspentAfter = unspent.length - mergedInputs + 1;
+  return {
+    type: 'consolidate',
+    success: result.success,
+    transactionHash: result.transactionHash,
+    blockNumber: result.blockNumber,
+    asset: options.asset,
+    amountConsolidated: amount,
+    mergedInputs,
+    unspentBefore: unspent.length,
+    unspentAfter,
+    needsAnotherRound: unspentAfter > MAX_INPUT_UTXOS,
+    note:
+      unspentAfter > MAX_INPUT_UTXOS
+        ? `Still fragmented beyond the ${MAX_INPUT_UTXOS}-input limit. Run veil_consolidate_utxos again to merge further.`
+        : 'Private balance can now be spent in a single transaction.',
+  };
+}
+
 async function readResponseBody(response: Response): Promise<unknown> {
   const contentType = response.headers.get('content-type') || '';
   const text = await response.text();
@@ -474,6 +619,7 @@ async function readResponseBody(response: Response): Promise<unknown> {
 
 export async function payX402(options: {
   url: string;
+  maxPayment?: string;
   confirm: boolean;
 }): Promise<Record<string, unknown>> {
   if (!options.confirm) {
@@ -486,14 +632,74 @@ export async function payX402(options: {
     throw new Error('VEIL_KEY missing. Call veil_init_keypair first or provide VEIL_KEY in .env.veil.');
   }
 
+  // Clamp the caller-supplied cap to the protective backstop. A caller can set a
+  // tighter cap, but never a looser one than X402_MAX_PAYMENT_USDC.
+  const requestedCap = options.maxPayment !== undefined ? Number(options.maxPayment) : X402_MAX_PAYMENT_USDC;
+  if (!Number.isFinite(requestedCap) || requestedCap <= 0) {
+    throw new Error('maxPayment must be a positive USDC amount, e.g. "0.10".');
+  }
+  const effectiveCap = Math.min(requestedCap, X402_MAX_PAYMENT_USDC);
+
   const payerIndex = reserveX402PayerIndex();
-  const result = await payX402Resource({
-    url: options.url,
-    rootPrivateKey: rootPrivateKey as `0x${string}`,
-    payerIndex,
-    rpcUrl: getRpcUrl(),
-    relayUrl: getX402RelayUrl(),
-  });
+
+  // Capture the funded state so a receipt exists even if a later step (signing,
+  // the second fetch, settle-header parse, body read) throws and strands funds
+  // on the payer EOA.
+  let fundedInfo: X402PayerFundedInfo | null = null;
+
+  let result: Awaited<ReturnType<typeof payX402Resource>>;
+  try {
+    result = await payX402Resource({
+      url: options.url,
+      rootPrivateKey: rootPrivateKey as `0x${string}`,
+      payerIndex,
+      rpcUrl: getRpcUrl(),
+      relayUrl: getX402RelayUrl(),
+      maxPayment: String(effectiveCap),
+      onPayerFunded: (info) => {
+        fundedInfo = info;
+        upsertX402Receipt({
+          timestamp: new Date().toISOString(),
+          url: options.url,
+          stage: 'funded',
+          success: false,
+          settled: null,
+          status: 0,
+          amount: info.amount,
+          amountAtomic: info.amountAtomic,
+          payerAddress: info.payerAddress,
+          payerIndex: info.payerIndex,
+          relayTransactionHash: info.relayTransactionHash || null,
+          paymentTransactionHash: null,
+          recoverable: true,
+        });
+      },
+    });
+  } catch (error) {
+    // If the payer was funded before the failure, keep the funded receipt and
+    // annotate it so the stranded funds remain discoverable for recovery.
+    if (fundedInfo) {
+      const info = fundedInfo as X402PayerFundedInfo;
+      upsertX402Receipt({
+        timestamp: new Date().toISOString(),
+        url: options.url,
+        stage: 'funded',
+        success: false,
+        settled: null,
+        status: 0,
+        amount: info.amount,
+        amountAtomic: info.amountAtomic,
+        payerAddress: info.payerAddress,
+        payerIndex: info.payerIndex,
+        relayTransactionHash: info.relayTransactionHash || null,
+        paymentTransactionHash: null,
+        recoverable: true,
+        error: error instanceof Error ? error.message : 'x402 payment failed after funding',
+      });
+    }
+    throw error;
+  }
+
   const body = await readResponseBody(result.response);
 
   // Report success from the x402 settlement result, not just the HTTP status.
@@ -503,11 +709,38 @@ export async function payX402(options: {
   const settled = result.paymentResponse?.success ?? null;
   const success = result.response.ok && settled !== false;
 
+  // Finalize the receipt for this payerIndex. A completed-but-unsettled payment
+  // may still have funds on the payer, so mark it recoverable in that case.
+  upsertX402Receipt({
+    timestamp: new Date().toISOString(),
+    url: options.url,
+    stage: 'completed',
+    success,
+    settled,
+    status: result.response.status,
+    amount: result.amount,
+    amountAtomic: result.amountAtomic,
+    payerAddress: result.payerAddress,
+    payerIndex: result.payerIndex,
+    relayTransactionHash: result.relayTransactionHash || null,
+    paymentTransactionHash: result.paymentTransactionHash || null,
+    recoverable: !success,
+  });
+
   return {
     success,
     settled,
     status: result.response.status,
     url: options.url,
+    maxPayment: String(effectiveCap),
+    receipt: {
+      payerAddress: result.payerAddress,
+      payerIndex: result.payerIndex,
+      amount: result.amount,
+      amountAtomic: result.amountAtomic,
+      relayTransactionHash: result.relayTransactionHash || null,
+      paymentTransactionHash: result.paymentTransactionHash || null,
+    },
     payerAddress: result.payerAddress,
     payerIndex: result.payerIndex,
     amount: result.amount,
@@ -517,6 +750,51 @@ export async function payX402(options: {
     paymentTransactionHash: result.paymentTransactionHash || null,
     body,
     type: 'x402_payment',
+  };
+}
+
+export function getX402Receipts(options: { limit?: number } = {}): Record<string, unknown> {
+  const { count, totalSpentUsdc, receipts } = listX402Receipts({ limit: options.limit });
+  return {
+    type: 'x402_receipts',
+    count,
+    totalSpentUsdc,
+    receipts,
+  };
+}
+
+export async function getX402PayerBalanceList(options: {
+  startIndex?: string;
+  count?: number;
+  nonZeroOnly?: boolean;
+}): Promise<Record<string, unknown>> {
+  const keypair = requireKeypair();
+  const rootPrivateKey = keypair.privkey;
+  if (!rootPrivateKey) {
+    throw new Error('VEIL_KEY missing. Call veil_init_keypair first or provide VEIL_KEY in .env.veil.');
+  }
+
+  const balances = await getX402PayerBalances({
+    rootPrivateKey: rootPrivateKey as `0x${string}`,
+    startIndex: options.startIndex ?? '0',
+    count: options.count ?? 16,
+    nonZeroOnly: options.nonZeroOnly ?? false,
+    rpcUrl: getRpcUrl(),
+  });
+
+  let totalAtomic = 0n;
+  for (const balance of balances) {
+    totalAtomic += BigInt(balance.usdcAtomic);
+  }
+
+  return {
+    type: 'x402_payer_balances',
+    startIndex: options.startIndex ?? '0',
+    count: balances.length,
+    totalUsdc: formatUnits(totalAtomic, POOL_CONFIG.usdc.decimals),
+    totalUsdcAtomic: totalAtomic.toString(),
+    note: 'Funds left on a payer EOA are recoverable from VEIL_KEY + payerIndex. This MCP does not yet sweep payers automatically.',
+    payers: balances,
   };
 }
 

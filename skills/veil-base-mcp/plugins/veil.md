@@ -60,8 +60,15 @@ veil_status({ owner? })
 veil_get_balances({ owner, pool?: "eth" | "usdc" | "all" })
 veil_deposit_status({ owner, pool: "eth" | "usdc", nonce })
 veil_wait_for_deposit({ owner, pool: "eth" | "usdc", nonce, timeoutSeconds?, intervalSeconds? })
+veil_x402_receipts({ limit? })
+veil_x402_payer_balances({ startIndex?, count?, nonZeroOnly? })
 veil_subaccount_status({ slot })
 ```
+
+`veil_get_balances` returns a per-pool `fragmentation` summary (`unspentCount`,
+`largestUtxo`, `smallestUtxo`, `needsConsolidation`). `veil_deposit_status`
+reports `queuePosition`, `queueLength`, and `typicalProcessingMinutes` (`8-12`)
+for pending deposits.
 
 Use `owner` from Base MCP `get_wallets`.
 
@@ -131,15 +138,15 @@ Deposit:
 8. Veil MCP veil_deposit_status({ owner, pool, nonce }) until status is not "pending"
 ```
 
-After Base MCP confirms the transaction, the funds are not immediately private. They enter the Veil queue first. Typical queue processing is around `10-15 minutes`. Report this lifecycle clearly: submitted on Base, pending in queue, then accepted into private balance.
+After Base MCP confirms the transaction, the funds are not immediately private. They enter the Veil queue first. Typical queue processing is around `8-12 minutes`. Use `veil_deposit_status` `queuePosition` and `typicalProcessingMinutes` to set expectations. Report this lifecycle clearly: submitted on Base, pending in queue, then accepted into private balance.
 
-Private withdraw, transfer, or x402 payment:
+Private withdraw, transfer, x402 payment, or consolidation:
 
 ```text
 1. Ask the user to explicitly confirm the relay-backed private action.
 2. For private transfers, verify the recipient is registered if that is not already known.
-3. For x402, confirm the URL and that private USDC will be withdrawn to a fresh payer EOA.
-4. Call veil_withdraw(..., confirm: true), veil_transfer(..., confirm: true), or veil_pay_x402(..., confirm: true).
+3. For x402, confirm the URL, the maxPayment cap, and that private USDC will be withdrawn to a fresh payer EOA.
+4. Call veil_withdraw(..., confirm: true), veil_transfer(..., confirm: true), veil_pay_x402(..., confirm: true), or veil_consolidate_utxos(..., confirm: true).
 5. Report only public transaction metadata, amount, payer address, response status/body, and success.
 ```
 
@@ -148,15 +155,34 @@ Do not route private relay actions through Base MCP `send_calls`.
 x402 payments:
 
 ```text
-veil_pay_x402({ url, confirm })
+veil_pay_x402({ url, maxPayment?, confirm })
 ```
 
 `veil_pay_x402` supports Coinbase-compatible x402 v2 `exact` Base USDC resources.
 It reserves and increments `X402_PAYER_INDEX` in `.env.veil`, withdraws the exact
 amount from private USDC to a fresh deterministic payer EOA, then signs the x402
-payment from that EOA. Configure `X402_RELAY_URL` to the relay x402 route base,
-for example `https://veil-relay.example/x402`; if only `RELAY_URL` is set, Veil
-MCP appends `/x402`.
+payment from that EOA. Always set a tight `maxPayment` cap (decimal USDC string
+like `"0.10"`); payment is rejected before any funds move if the resource demands
+more. The cap defaults to and is hard-capped at `10` USDC. Configure
+`X402_RELAY_URL` to the relay x402 route base, for example
+`https://veil-relay.example/x402`; if only `RELAY_URL` is set, Veil MCP appends
+`/x402`.
+
+Each payment writes a local receipt. Use `veil_x402_receipts({ limit? })` for
+spend history and total USDC spent, and `veil_x402_payer_balances({ startIndex?,
+count?, nonZeroOnly? })` to find USDC left on a payer after a failed payment.
+
+UTXO consolidation:
+
+```text
+veil_consolidate_utxos({ asset, amount?, confirm })
+```
+
+A single transaction consumes at most 16 input UTXOs. When `veil_get_balances`
+reports `fragmentation.needsConsolidation: true`, the full balance cannot be
+spent in one transaction. `veil_consolidate_utxos` merges notes via a private
+self-transfer. Omit `amount` to merge as much as possible (up to 16 notes) in one
+round; repeat while the response reports `needsAnotherRound: true`.
 
 Subaccounts:
 

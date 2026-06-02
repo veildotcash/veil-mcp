@@ -36,8 +36,9 @@ Important behavior carried over from the Veil CLI skill:
 - All operations target Base mainnet.
 - A dedicated Base `RPC_URL` is recommended because Merkle tree, event, queue, and balance reads can hit public RPC rate limits. It does not replace Base MCP.
 - Deposit amounts are net amounts; fee handling is built into the prepare tool.
-- Deposits enter a queue before becoming private balance.
+- Deposits enter a queue before becoming private balance (typically 8-12 minutes); `veil_deposit_status` reports queue position and ETA.
 - Private transfers require the recipient to already be registered with Veil.
-- x402 payments use private USDC, reserve a fresh deterministic payer index, and support standard Base USDC x402 resources.
+- x402 payments use private USDC, reserve a fresh deterministic payer index, and support standard Base USDC x402 resources. Always set a tight `maxPayment` cap (default and hard cap 10 USDC); each payment writes a local receipt readable via `veil_x402_receipts`, and `veil_x402_payer_balances` surfaces funds left on a payer.
+- A single transaction consumes at most 16 input UTXOs; when balances fragment, use `veil_consolidate_utxos` to merge notes via a private self-transfer.
 - Agents should summarize actions in plain language rather than presenting raw calldata.
 - Never expose `VEIL_KEY`, proof internals, nullifiers, encrypted outputs, payer private keys, or signatures.

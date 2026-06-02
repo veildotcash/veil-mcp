@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 
 export const DEFAULT_RPC_URL = 'https://mainnet.base.org';
 export const VEIL_ENV_PATH = '.env.veil';
+export const VEIL_X402_RECEIPTS_PATH = '.veil-x402-receipts.json';
 
 export function loadEnv(): void {
   dotenv.config({ path: VEIL_ENV_PATH, quiet: true });
