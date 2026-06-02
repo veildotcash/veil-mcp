@@ -496,8 +496,16 @@ export async function payX402(options: {
   });
   const body = await readResponseBody(result.response);
 
+  // Report success from the x402 settlement result, not just the HTTP status.
+  // A spec-compliant facilitator returns 402 when settlement fails, but a 2xx
+  // response whose settle header explicitly reports failure must not be treated
+  // as a successful payment.
+  const settled = result.paymentResponse?.success ?? null;
+  const success = result.response.ok && settled !== false;
+
   return {
-    success: result.response.ok,
+    success,
+    settled,
     status: result.response.status,
     url: options.url,
     payerAddress: result.payerAddress,
