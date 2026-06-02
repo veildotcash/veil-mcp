@@ -16,6 +16,20 @@ export function getRelayUrl(): string | undefined {
   return process.env.RELAY_URL;
 }
 
+function appendPath(baseUrl: string, path: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+}
+
+export function getX402RelayUrl(): string | undefined {
+  if (process.env.X402_RELAY_URL) {
+    return process.env.X402_RELAY_URL;
+  }
+  if (process.env.RELAY_URL) {
+    return appendPath(process.env.RELAY_URL, '/x402');
+  }
+  return 'https://veil-relay.up.railway.app/x402';
+}
+
 export function getVeilKey(): `0x${string}` | undefined {
   const key = process.env.VEIL_KEY;
   if (!key) return undefined;

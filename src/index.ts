@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import './crypto-polyfill.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -12,6 +13,7 @@ import {
   executeWithdraw,
   getBalances,
   getDepositStatus,
+  payX402,
   prepareDeposit,
   prepareRegister,
   subaccountStatus,
@@ -177,6 +179,22 @@ server.registerTool(
   },
   async ({ asset, amount, recipient, confirm }) =>
     jsonResult(await executeTransfer({ asset, amount, recipient: recipient as `0x${string}`, confirm })),
+);
+
+server.registerTool(
+  'veil_pay_x402',
+  {
+    title: 'Pay x402 Resource',
+    description:
+      'Pay a Coinbase-compatible x402 resource from private Veil USDC. Requires explicit user intent and confirm: true because it withdraws to a fresh payer EOA and submits payment.',
+    inputSchema: {
+      url: z.string().url().describe('x402-protected resource URL.'),
+      confirm: z
+        .boolean()
+        .describe('Must be true after the user explicitly confirms private USDC payment.'),
+    },
+  },
+  async ({ url, confirm }) => jsonResult(await payX402({ url, confirm })),
 );
 
 server.registerTool(

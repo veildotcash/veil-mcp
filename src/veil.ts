@@ -15,14 +15,15 @@ import {
   getQueueAddress,
   getQueueBalance,
   getSubaccountStatus,
+  payX402Resource,
   transfer,
   withdraw,
 } from '@veil-cash/sdk';
 import { createPublicClient, formatEther, formatUnits, http, parseEther, parseUnits } from 'viem';
 import { base } from 'viem/chains';
 import { asBaseCall, sendCalls, toHexValue } from './base.js';
-import { DEFAULT_RPC_URL, getRelayUrl, getRpcUrl } from './env.js';
-import { getKeyStatus, maskHex, requireDepositKey, requireKeypair } from './key-store.js';
+import { DEFAULT_RPC_URL, getRelayUrl, getRpcUrl, getX402RelayUrl } from './env.js';
+import { getKeyStatus, maskHex, requireDepositKey, requireKeypair, reserveX402PayerIndex } from './key-store.js';
 import type { Asset, Hex, Pool, SendCallsPayload, StepCall } from './types.js';
 
 const MINIMUM_NET: Record<Asset, number> = {
@@ -452,6 +453,62 @@ export async function executeTransfer(options: {
     amount: result.amount,
     recipient: result.recipient,
     type: 'transfer',
+  };
+}
+
+async function readResponseBody(response: Response): Promise<unknown> {
+  const contentType = response.headers.get('content-type') || '';
+  const text = await response.text();
+  if (!text) {
+    return null;
+  }
+  if (contentType.includes('application/json')) {
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return text;
+    }
+  }
+  return text;
+}
+
+export async function payX402(options: {
+  url: string;
+  confirm: boolean;
+}): Promise<Record<string, unknown>> {
+  if (!options.confirm) {
+    throw new Error('x402 payment withdraws private USDC to a fresh payer and submits payment. Re-call with confirm: true after explicit user approval.');
+  }
+
+  const keypair = requireKeypair();
+  const rootPrivateKey = keypair.privkey;
+  if (!rootPrivateKey) {
+    throw new Error('VEIL_KEY missing. Call veil_init_keypair first or provide VEIL_KEY in .env.veil.');
+  }
+
+  const payerIndex = reserveX402PayerIndex();
+  const result = await payX402Resource({
+    url: options.url,
+    rootPrivateKey: rootPrivateKey as `0x${string}`,
+    payerIndex,
+    rpcUrl: getRpcUrl(),
+    relayUrl: getX402RelayUrl(),
+  });
+  const body = await readResponseBody(result.response);
+
+  return {
+    success: result.response.ok,
+    status: result.response.status,
+    url: options.url,
+    payerAddress: result.payerAddress,
+    payerIndex: result.payerIndex,
+    amount: result.amount,
+    amountAtomic: result.amountAtomic,
+    relayTransactionHash: result.relayTransactionHash || null,
+    relayBlockNumber: result.relayBlockNumber || null,
+    paymentTransactionHash: result.paymentTransactionHash || null,
+    body,
+    type: 'x402_payment',
   };
 }
 

@@ -87,6 +87,8 @@ The server loads `.env.veil` first, then `.env`, matching the Veil CLI conventio
 | `DEPOSIT_KEY` | Public Veil deposit key used for register/deposit calldata |
 | `RPC_URL` | Optional Base RPC URL, defaults to `https://mainnet.base.org` |
 | `RELAY_URL` | Optional Veil relay URL override |
+| `X402_RELAY_URL` | Optional x402 relay base URL, defaults to `RELAY_URL + /x402` or hosted relay `/x402` |
+| `X402_PAYER_INDEX` | Persisted deterministic payer index; managed by `veil_pay_x402` |
 
 Configure `RPC_URL` with a dedicated Base RPC endpoint for reliable Veil reads. Private balance and proof-building flows pull Merkle tree data, historical events, queue state, and wallet balances, which can exceed public RPC rate limits. A dedicated RPC can also reduce metadata exposure, but it does not replace Base MCP: public wallet actions should still be prepared by Veil MCP and submitted through Base MCP `send_calls`.
 
@@ -109,6 +111,7 @@ This package includes the MCP-specific agent skill in `skills/veil-base-mcp`. If
 | `veil_prepare_deposit` | Return Base `send_calls` calldata for ETH/USDC deposits |
 | `veil_withdraw` | Submit a private withdrawal through the Veil relay |
 | `veil_transfer` | Submit a private transfer through the Veil relay |
+| `veil_pay_x402` | Pay a Coinbase-compatible x402 resource from private USDC |
 | `veil_subaccount_status` | Read subaccount status |
 
 `veil_prepare_register` and `veil_prepare_deposit` return:
@@ -134,6 +137,18 @@ Deposits treat `amount` as the net amount intended to land in Veil. Each address
 
 Use `veil_deposit_status({ owner, pool, nonce })` when you know the queue nonce, or `veil_get_balances({ owner, pool })` to discover pending deposits. `veil_wait_for_deposit` is available for MCP clients that can tolerate a long-running poll.
 
+## x402 Payments
+
+`veil_pay_x402({ url, confirm })` pays a standard x402 v2 Base USDC `exact`
+resource from the local private USDC balance. It reserves the current
+`X402_PAYER_INDEX`, withdraws the exact payment amount to the deterministic fresh
+payer EOA, signs the x402 payment from that EOA, and returns the paid response
+body plus public transaction metadata.
+
+Set `X402_RELAY_URL` to the x402 route base, for example
+`https://veil-relay.example/x402`. If only `RELAY_URL` is set, the MCP appends
+`/x402`.
+
 ## Safety
 
-MCP responses never include `VEIL_KEY`, wallet private keys, proof arguments, nullifiers, encrypted outputs, or private relay internals. `veil_withdraw` and `veil_transfer` require `confirm: true` because they submit through the Veil relay rather than Base MCP approval links. Before a private transfer, verify that the recipient is registered for Veil.
+MCP responses never include `VEIL_KEY`, wallet private keys, proof arguments, nullifiers, encrypted outputs, x402 signatures, or private relay internals. `veil_withdraw`, `veil_transfer`, and `veil_pay_x402` require `confirm: true` because they submit through the Veil relay rather than Base MCP approval links. Before a private transfer, verify that the recipient is registered for Veil.

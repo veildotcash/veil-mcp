@@ -133,16 +133,30 @@ Deposit:
 
 After Base MCP confirms the transaction, the funds are not immediately private. They enter the Veil queue first. Typical queue processing is around `10-15 minutes`. Report this lifecycle clearly: submitted on Base, pending in queue, then accepted into private balance.
 
-Private withdraw or transfer:
+Private withdraw, transfer, or x402 payment:
 
 ```text
 1. Ask the user to explicitly confirm the relay-backed private action.
 2. For private transfers, verify the recipient is registered if that is not already known.
-3. Call veil_withdraw(..., confirm: true) or veil_transfer(..., confirm: true).
-4. Report only transaction hash, block number, asset, amount, recipient, and success.
+3. For x402, confirm the URL and that private USDC will be withdrawn to a fresh payer EOA.
+4. Call veil_withdraw(..., confirm: true), veil_transfer(..., confirm: true), or veil_pay_x402(..., confirm: true).
+5. Report only public transaction metadata, amount, payer address, response status/body, and success.
 ```
 
 Do not route private relay actions through Base MCP `send_calls`.
+
+x402 payments:
+
+```text
+veil_pay_x402({ url, confirm })
+```
+
+`veil_pay_x402` supports Coinbase-compatible x402 v2 `exact` Base USDC resources.
+It reserves and increments `X402_PAYER_INDEX` in `.env.veil`, withdraws the exact
+amount from private USDC to a fresh deterministic payer EOA, then signs the x402
+payment from that EOA. Configure `X402_RELAY_URL` to the relay x402 route base,
+for example `https://veil-relay.example/x402`; if only `RELAY_URL` is set, Veil
+MCP appends `/x402`.
 
 Subaccounts:
 
@@ -158,13 +172,14 @@ Subaccounts:
 - Missing deposit key: call `veil_init_keypair`; do not invent or request raw private key material from the user.
 - Different registered deposit key: ask before retrying `veil_prepare_register` with `force: true`, because it prepares a key rotation.
 - Invalid amount: ETH minimum is `0.01`; USDC minimum is `10`.
+- x402 unsupported requirement: only Base USDC `exact` is supported; reject other assets, networks, or schemes.
 - RPC/network failure: retry when appropriate and suggest setting `RPC_URL` to a dedicated Base RPC, especially when Merkle tree or event reads appear rate-limited.
 - Relay failure: check `veil_status` relay health and do not resubmit private actions without user confirmation.
 
 ## Safety Rules
 
 - Never ask Veil MCP to reveal `VEIL_KEY`.
-- Never echo private proof internals, nullifiers, encrypted outputs, or signatures.
+- Never echo private proof internals, nullifiers, encrypted outputs, payer private keys, or signatures.
 - Do not show raw calldata as the final user-facing answer. Summarize asset, amount, fee, status, request id, transaction hash, and nonce.
 - Confirm symbol, amount, recipient, and whether the action uses Base MCP approval or the Veil relay before any write.
 - If a user asks to recover, sweep, deploy, or merge subaccounts, explain that v1 only supports subaccount status.

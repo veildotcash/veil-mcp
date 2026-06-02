@@ -55,7 +55,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@veil-cash/sdk": "^0.6.5",
+    "@veil-cash/sdk": "^0.7.0",
     "dotenv": "^17.2.3",
     "viem": "^2.33.3",
     "zod": "^3.25.76"
