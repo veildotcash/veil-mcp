@@ -79,7 +79,7 @@ For a local checkout:
 
 ## Environment
 
-The server loads `.env.veil` first, then `.env`, matching the Veil CLI convention.
+The server loads `.env.veil` first, then `.env`, matching the Veil CLI convention. If `.env.veil` is not found in the working directory, `$HOME/.env.veil` is checked as a fallback.
 
 | Variable | Purpose |
 | --- | --- |
@@ -89,6 +89,29 @@ The server loads `.env.veil` first, then `.env`, matching the Veil CLI conventio
 | `RELAY_URL` | Optional Veil relay URL override |
 
 Configure `RPC_URL` with a dedicated Base RPC endpoint for reliable Veil reads. Private balance and proof-building flows pull Merkle tree data, historical events, queue state, and wallet balances, which can exceed public RPC rate limits. A dedicated RPC can also reduce metadata exposure, but it does not replace Base MCP: public wallet actions should still be prepared by Veil MCP and submitted through Base MCP `send_calls`.
+
+### MCP Client Environment Gotchas
+
+Most MCP clients (Claude Desktop, Hermes Agent, Cursor, etc.) do **not** inherit the shell environment or read dotenv files from the subprocess CWD. This means `.env.veil` alone may not be enough to supply `VEIL_KEY` and `DEPOSIT_KEY`.
+
+**Recommended**: pass environment variables explicitly in your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "veil": {
+      "command": "veil-mcp",
+      "env": {
+        "VEIL_KEY": "0x...",
+        "DEPOSIT_KEY": "0x...",
+        "RPC_URL": "https://base-mainnet.g.alchemy.com/v2/YOUR_KEY"
+      }
+    }
+  }
+}
+```
+
+If variables are missing at startup, the server will emit warnings to stderr (visible in your MCP client's log output) indicating which keys are absent and what functionality is affected.
 
 Use `veil_init_keypair` to generate a random local Veil keypair. It writes `.env.veil` and returns only the public deposit key.
 

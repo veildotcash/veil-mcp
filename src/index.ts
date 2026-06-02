@@ -3,7 +3,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { loadEnv } from './env.js';
+import { loadEnv, logStartupDiagnostics } from './env.js';
 import { initRandomKeypair } from './key-store.js';
 import { jsonResult } from './result.js';
 import { addressSchema, assetSchema, poolOrAllSchema, poolSchema } from './validation.js';
@@ -20,6 +20,7 @@ import {
 } from './veil.js';
 
 loadEnv();
+logStartupDiagnostics();
 
 const server = new McpServer({
   name: 'veil-mcp',

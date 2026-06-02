@@ -37,6 +37,19 @@ const DEPOSIT_STATUS_MAP: Record<number, 'pending' | 'accepted' | 'rejected' | '
   3: 'refunded',
 };
 
+function wrapRpcError(error: unknown): never {
+  const msg = error instanceof Error ? error.message : String(error);
+  if (msg.includes('rate limit') || msg.includes('429') || msg.includes('Too Many Requests')) {
+    const rpcUrl = getRpcUrl();
+    const hint =
+      rpcUrl === DEFAULT_RPC_URL
+        ? ' Set RPC_URL to a dedicated Base RPC endpoint (Alchemy, Infura, etc.) to avoid public rate limits.'
+        : '';
+    throw new Error(`RPC rate-limited.${hint} Original: ${msg}`);
+  }
+  throw error;
+}
+
 function publicClient(rpcUrl = getRpcUrl()) {
   return createPublicClient({
     chain: base,
@@ -183,12 +196,23 @@ export async function getBalances(options: {
   const rpcUrl = getRpcUrl();
   const poolNames: Pool[] = options.pool && options.pool !== 'all' ? [options.pool] : ['eth', 'usdc'];
   const keypair = getKeyStatus().veilKeyFound ? requireKeypair() : null;
-  const wallet = await getWalletBalances(options.owner, rpcUrl);
+
+  let wallet;
+  try {
+    wallet = await getWalletBalances(options.owner, rpcUrl);
+  } catch (error) {
+    wrapRpcError(error);
+  }
 
   const pools = await Promise.all(
     poolNames.map(async (pool) => {
       const queue = await getQueueBalance({ address: options.owner, pool, rpcUrl });
-      const privateBalance = keypair ? await getPrivateBalance({ keypair, pool, rpcUrl }) : null;
+      let privateBalance;
+      try {
+        privateBalance = keypair ? await getPrivateBalance({ keypair, pool, rpcUrl }) : null;
+      } catch (error) {
+        wrapRpcError(error);
+      }
       const privateWei = privateBalance ? BigInt(privateBalance.privateBalanceWei) : 0n;
       const queueWei = BigInt(queue.queueBalanceWei);
       const totalWei = privateWei + queueWei;
