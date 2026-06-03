@@ -21,6 +21,7 @@ import {
   transfer,
   withdraw,
 } from '@veil-cash/sdk';
+import { randomUUID } from 'node:crypto';
 import { createPublicClient, formatEther, formatUnits, http, parseEther, parseUnits } from 'viem';
 import { base } from 'viem/chains';
 import { asBaseCall, sendCalls, toHexValue } from './base.js';
@@ -903,6 +904,7 @@ export async function payX402(options: {
   // the second fetch, settle-header parse, body read) throws and strands funds
   // on the payer EOA.
   let fundedInfo: X402PayerFundedInfo | null = null;
+  const receiptAttemptId = randomUUID();
 
   let result: Awaited<ReturnType<typeof payX402Resource>>;
   try {
@@ -918,6 +920,7 @@ export async function payX402(options: {
       onPayerFunded: (info) => {
         fundedInfo = info;
         upsertX402Receipt({
+          attemptId: receiptAttemptId,
           timestamp: new Date().toISOString(),
           url: options.url,
           stage: 'funded',
@@ -940,6 +943,7 @@ export async function payX402(options: {
     if (fundedInfo) {
       const info = fundedInfo as X402PayerFundedInfo;
       upsertX402Receipt({
+        attemptId: receiptAttemptId,
         timestamp: new Date().toISOString(),
         url: options.url,
         stage: 'funded',
@@ -968,9 +972,10 @@ export async function payX402(options: {
   const settled = result.paymentResponse?.success ?? null;
   const success = result.response.ok && settled !== false;
 
-  // Finalize the receipt for this payerIndex. A completed-but-unsettled payment
+  // Finalize the receipt for this payment attempt. A completed-but-unsettled payment
   // may still have funds on the payer, so mark it recoverable in that case.
   upsertX402Receipt({
+    attemptId: receiptAttemptId,
     timestamp: new Date().toISOString(),
     url: options.url,
     stage: 'completed',

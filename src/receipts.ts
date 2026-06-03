@@ -9,6 +9,7 @@ import { VEIL_X402_RECEIPTS_PATH } from './env.js';
  * or response bodies.
  */
 export interface X402Receipt {
+  attemptId?: string;
   timestamp: string;
   url: string;
   // 'funded' means the payer EOA was funded by the relay but the payment has not
@@ -60,13 +61,15 @@ export function appendX402Receipt(receipt: X402Receipt, path = VEIL_X402_RECEIPT
 }
 
 /**
- * Insert or update a receipt keyed by payerIndex. Each payment reserves a unique
- * payerIndex, so this lets a payment progress from a 'funded' record to a
- * 'completed' record without duplicating entries.
+ * Insert or update a receipt for one payment attempt. Payer indexes can be reused
+ * to drain stranded x402 balances, so new receipts use attemptId as their stable
+ * key while legacy receipts fall back to payerIndex.
  */
 export function upsertX402Receipt(receipt: X402Receipt, path = VEIL_X402_RECEIPTS_PATH): void {
   const receipts = readReceiptsFile(path);
-  const existing = receipts.findIndex((r) => r.payerIndex === receipt.payerIndex);
+  const existing = receipt.attemptId
+    ? receipts.findIndex((r) => r.attemptId === receipt.attemptId)
+    : receipts.findIndex((r) => !r.attemptId && r.payerIndex === receipt.payerIndex);
   if (existing >= 0) {
     receipts[existing] = receipt;
     writeReceiptsFile(receipts, path);
