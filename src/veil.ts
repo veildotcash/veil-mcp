@@ -10,7 +10,6 @@ import {
   buildRegisterTx,
   checkRelayHealth,
   getAddresses,
-  getDailyFreeRemaining,
   getPrivateBalance,
   getQueueAddress,
   getQueueBalance,
@@ -116,21 +115,7 @@ async function getGrossAmount(options: {
   owner: Hex;
   pool: Pool;
   rpcUrl?: string;
-}): Promise<{ grossWei: bigint; feeWei: bigint; dailyFreeUsed: boolean; dailyFreeRemaining: number }> {
-  const freeRemaining = await getDailyFreeRemaining({
-    address: options.owner,
-    pool: options.pool,
-    rpcUrl: options.rpcUrl,
-  });
-  if (freeRemaining > 0) {
-    return {
-      grossWei: options.netWei,
-      feeWei: 0n,
-      dailyFreeUsed: true,
-      dailyFreeRemaining: freeRemaining - 1,
-    };
-  }
-
+}): Promise<{ grossWei: bigint; feeWei: bigint }> {
   const grossWei = (await publicClient(options.rpcUrl).readContract({
     address: getAddresses().entry,
     abi: ENTRY_ABI,
@@ -141,8 +126,6 @@ async function getGrossAmount(options: {
   return {
     grossWei,
     feeWei: grossWei - options.netWei,
-    dailyFreeUsed: false,
-    dailyFreeRemaining: 0,
   };
 }
 
@@ -425,8 +408,6 @@ export async function prepareDeposit(options: { owner: Hex; asset: Asset; amount
     netAmount: string;
     grossAmount: string;
     fee: string;
-    dailyFreeUsed: boolean;
-    dailyFreeRemaining: number;
     steps: StepCall[];
   }
 > {
@@ -466,8 +447,6 @@ export async function prepareDeposit(options: { owner: Hex; asset: Asset; amount
     netAmount: options.amount,
     grossAmount,
     fee,
-    dailyFreeUsed: gross.dailyFreeUsed,
-    dailyFreeRemaining: gross.dailyFreeRemaining,
     steps,
   };
 }

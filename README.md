@@ -137,7 +137,7 @@ Pass `chain` and `calls` directly to Base MCP `send_calls`.
 
 If `veil_prepare_register` returns `action: "alreadyRegistered"` with an empty `calls` array, do not call `send_calls`; continue to deposit or balance checks.
 
-Deposits treat `amount` as the net amount intended to land in Veil. Each address may receive fee-free deposits; otherwise the protocol fee is calculated and included in the prepared calldata. After Base MCP confirms the transaction, the deposit enters the Veil queue before it reaches private balance. Typical queue processing is around 8-12 minutes.
+Deposits treat `amount` as the net amount intended to land in Veil. The 0.3% protocol fee is calculated and included in the prepared calldata. After Base MCP confirms the transaction, the deposit enters the Veil queue before it reaches private balance. Typical queue processing is around 8-12 minutes.
 
 Use `veil_deposit_status({ owner, pool, nonce })` when you know the queue nonce, or `veil_get_balances({ owner, pool })` to discover pending deposits. `veil_deposit_status` reports `queuePosition`, `queueLength`, and `typicalProcessingMinutes` for pending deposits. `veil_wait_for_deposit` is available for MCP clients that can tolerate a long-running poll.
 

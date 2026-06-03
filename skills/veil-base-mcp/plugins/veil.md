@@ -95,7 +95,7 @@ For USDC deposits, the calls are ordered approval first, then deposit. Submit th
 
 If `veil_prepare_register` returns `action: "alreadyRegistered"` and `calls: []`, do not call `send_calls`; continue to deposit or balance checks. If it errors because a different deposit key is already registered, ask the user before retrying with `force: true`.
 
-Deposit amounts are net amounts. The prepare tool checks whether the owner has a free daily deposit slot; if not, it includes the protocol fee in the prepared calldata. Minimums are `0.01 ETH` and `10 USDC`.
+Deposit amounts are net amounts. The prepare tool includes the 0.3% protocol fee in the prepared calldata. Minimums are `0.01 ETH` and `10 USDC`.
 
 ## send_calls Mapping
 
