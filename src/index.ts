@@ -190,7 +190,7 @@ server.registerTool(
   {
     title: 'Pay x402 Resource',
     description:
-      'Pay a Coinbase-compatible x402 resource from private Veil USDC. Supports GET and POST resources. Requires explicit user intent and confirm: true because it withdraws to a fresh payer EOA and submits payment. Set a tight maxPayment cap; the payment is rejected if the resource demands more.',
+      'Pay a Coinbase-compatible x402 resource from private Veil USDC. Supports GET and POST resources. Requires explicit user intent and confirm: true because it moves private USDC and submits payment. Payer selection (unless forceFresh or an explicit payerIndex is given): if a funded payer already holds the full price it is surfaced for free reuse; otherwise stranded dust is drained by topping up the largest funded payer with only the shortfall; otherwise a fresh payer is minted. Set a tight maxPayment cap; the payment is rejected if the resource demands more.',
     inputSchema: {
       url: z.string().url().describe('x402-protected resource URL.'),
       method: z
@@ -214,7 +214,7 @@ server.registerTool(
         .string()
         .regex(/^\d+$/, 'payerIndex must be a non-negative integer string.')
         .optional()
-        .describe('Reuse an already-funded payer EOA at this index (no new withdrawal). Use after a reuse_available result or to retry a funded-but-failed payment.'),
+        .describe('Reuse a specific payer EOA at this index (top-up mode: pays from its balance, withdrawing only any shortfall). Use after a reuse_available result, to retry a funded-but-failed payment, or to deliberately drain a chosen payer.'),
       forceFresh: z
         .boolean()
         .default(false)
@@ -277,19 +277,23 @@ server.registerTool(
   {
     title: 'x402 Payer Balances',
     description:
-      'Inspect Base USDC balances held by deterministic x402 payer EOAs over an index range. Surfaces dust or funds left on a payer after a failed payment. Read-only; does not move or reuse funds.',
+      'Inspect Base USDC balances held by deterministic x402 payer EOAs. Surfaces dust or funds left on a payer after a failed payment. Read-only; does not move funds (veil_pay_x402 reuses/drains them automatically). Use discover: true to find every funded payer regardless of the local index counter; otherwise inspect an explicit startIndex/count range.',
     inputSchema: {
+      discover: z
+        .boolean()
+        .default(false)
+        .describe('Find every payer EOA still holding USDC via a gap-limit scan, independent of the local X402_PAYER_INDEX counter. Ignores startIndex/count when true.'),
       startIndex: z
         .string()
         .regex(/^\d+$/, 'startIndex must be a non-negative integer string.')
         .default('0')
-        .describe('First payer index to inspect.'),
-      count: z.number().int().min(1).max(256).default(16).describe('How many payer indexes to inspect from startIndex.'),
-      nonZeroOnly: z.boolean().default(false).describe('Only return payers that currently hold USDC.'),
+        .describe('First payer index to inspect (range mode only).'),
+      count: z.number().int().min(1).max(256).default(16).describe('How many payer indexes to inspect from startIndex (range mode only).'),
+      nonZeroOnly: z.boolean().default(false).describe('Only return payers that currently hold USDC (range mode only).'),
     },
   },
-  async ({ startIndex, count, nonZeroOnly }) =>
-    jsonResult(await getX402PayerBalanceList({ startIndex, count, nonZeroOnly })),
+  async ({ discover, startIndex, count, nonZeroOnly }) =>
+    jsonResult(await getX402PayerBalanceList({ discover, startIndex, count, nonZeroOnly })),
 );
 
 server.registerTool(

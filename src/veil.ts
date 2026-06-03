@@ -28,7 +28,7 @@ import { asBaseCall, sendCalls, toHexValue } from './base.js';
 import { DEFAULT_RPC_URL, getRelayUrl, getRpcUrl, getX402RelayUrl } from './env.js';
 import { getKeyStatus, getX402PayerIndex, maskHex, requireDepositKey, requireKeypair, reserveX402PayerIndex } from './key-store.js';
 import { listX402Receipts, upsertX402Receipt } from './receipts.js';
-import type { X402PayerFundedInfo } from '@veil-cash/sdk';
+import type { X402PayerBalance, X402PayerFundedInfo } from '@veil-cash/sdk';
 import type { Asset, Hex, Pool, SendCallsPayload, StepCall } from './types.js';
 
 const MINIMUM_NET: Record<Asset, number> = {
@@ -46,6 +46,13 @@ const X402_MAX_PAYMENT_USDC = 10;
 // Beyond this, a full-balance withdraw/payment cannot be built without first
 // consolidating.
 const MAX_INPUT_UTXOS = 16;
+
+// Payer discovery: how many consecutive empty payer indexes (past the locally
+// known high-water mark) end a forward scan, and the absolute index ceiling. The
+// gap limit lets discovery find funds above a reset/forgotten X402_PAYER_INDEX
+// counter without scanning unboundedly.
+const PAYER_DISCOVERY_GAP_LIMIT = 8;
+const PAYER_DISCOVERY_MAX_SCAN = 256;
 
 const DEPOSIT_STATUS_MAP: Record<number, 'pending' | 'accepted' | 'rejected' | 'refunded'> = {
   0: 'pending',
@@ -710,6 +717,71 @@ export async function quoteX402(options: {
   };
 }
 
+/**
+ * Discover every x402 payer EOA that currently holds a non-zero USDC balance,
+ * independent of the local X402_PAYER_INDEX counter. Scans [0, highWater] where
+ * highWater is the max of the env counter and the largest payer index seen in
+ * receipts, then continues with a gap-limit tail scan so funds stranded above a
+ * reset/forgotten counter are still found. Read-only.
+ */
+async function discoverFundedPayers(options: {
+  rootPrivateKey: `0x${string}`;
+  rpcUrl?: string;
+}): Promise<{ payers: X402PayerBalance[]; scanned: number; highWater: number; truncated: boolean }> {
+  const rpcUrl = options.rpcUrl ?? getRpcUrl();
+
+  // Local high-water mark. The counter points at the NEXT free index, so used
+  // indexes are [0, counter-1]. Receipts persist every reserved index and survive
+  // an env-counter reset better than the counter alone.
+  const counter = Number(getX402PayerIndex());
+  const { receipts } = listX402Receipts({ limit: 500 });
+  let maxReceiptIndex = -1;
+  for (const r of receipts) {
+    if (/^\d+$/.test(r.payerIndex)) {
+      maxReceiptIndex = Math.max(maxReceiptIndex, Number(r.payerIndex));
+    }
+  }
+  const highWater = Math.max(counter - 1, maxReceiptIndex, -1);
+
+  const payers: X402PayerBalance[] = [];
+  let index = 0;
+  let consecutiveEmptyPastHighWater = 0;
+  let scanned = 0;
+  let truncated = false;
+
+  while (index < PAYER_DISCOVERY_MAX_SCAN) {
+    const batchCount = Math.min(PAYER_DISCOVERY_GAP_LIMIT, PAYER_DISCOVERY_MAX_SCAN - index);
+    const batch = await getX402PayerBalances({
+      rootPrivateKey: options.rootPrivateKey,
+      startIndex: String(index),
+      count: batchCount,
+      nonZeroOnly: false,
+      rpcUrl,
+    });
+    for (const b of batch) {
+      scanned++;
+      if (BigInt(b.usdcAtomic) > 0n) {
+        payers.push(b);
+        consecutiveEmptyPastHighWater = 0;
+      } else if (Number(b.payerIndex) > highWater) {
+        // Only empties beyond the known range count toward the gap limit, so the
+        // full [0, highWater] range is always covered even if it has gaps.
+        consecutiveEmptyPastHighWater++;
+      }
+    }
+    index += batchCount;
+    if (index > highWater && consecutiveEmptyPastHighWater >= PAYER_DISCOVERY_GAP_LIMIT) {
+      break;
+    }
+  }
+  // Hit the absolute ceiling before the gap closed: there may be more beyond.
+  if (index >= PAYER_DISCOVERY_MAX_SCAN && consecutiveEmptyPastHighWater < PAYER_DISCOVERY_GAP_LIMIT) {
+    truncated = true;
+  }
+
+  return { payers, scanned, highWater, truncated };
+}
+
 export async function payX402(options: {
   url: string;
   method?: 'GET' | 'POST';
@@ -737,16 +809,22 @@ export async function payX402(options: {
   // the x402 payment header on top of these headers.
   const init = buildX402RequestInit(options);
 
-  // A caller-supplied payerIndex reuses an already-funded payer EOA (e.g. to
-  // retry a payment whose funding succeeded but whose delivery failed) instead of
-  // burning a fresh withdrawal.
-  const reusePayer = options.payerIndex !== undefined;
+  // Funding mode passed to the SDK: 'topup' reuses a payer's balance and withdraws
+  // only any shortfall; false withdraws the full amount to a fresh payer.
+  let reuseMode: boolean | 'topup' = false;
+  // True when this payment is draining stranded dust off an existing payer.
+  let drainedDust = false;
   let payerIndex: bigint;
-  if (reusePayer) {
-    if (!/^\d+$/.test(options.payerIndex as string)) {
+
+  // A caller-supplied payerIndex reuses a specific payer EOA (top-up mode: reuse
+  // its balance and withdraw only the shortfall) — e.g. to retry a payment whose
+  // funding succeeded but whose delivery failed, or to deliberately drain a payer.
+  if (options.payerIndex !== undefined) {
+    if (!/^\d+$/.test(options.payerIndex)) {
       throw new Error('payerIndex must be a non-negative integer string.');
     }
-    payerIndex = BigInt(options.payerIndex as string);
+    payerIndex = BigInt(options.payerIndex);
+    reuseMode = 'topup';
   } else {
     // Pre-flight probe before funding so a request the merchant rejects before
     // payment never burns a withdrawal, and so the price can be capped.
@@ -786,50 +864,60 @@ export async function payX402(options: {
       );
     }
 
-    // Auto-detect an already-funded payer with enough USDC for this payment and
-    // ask the caller to reuse it rather than silently withdrawing again. Scanning
-    // 0..next covers every payer index this MCP has reserved.
-    if (!options.forceFresh) {
+    if (options.forceFresh) {
+      payerIndex = reserveX402PayerIndex();
+    } else {
       const requiredAtomic = BigInt(quote.amountAtomic as string);
-      const scanCount = Number(getX402PayerIndex());
-      if (scanCount > 0) {
-        const balances = await getX402PayerBalances({
-          rootPrivateKey: rootPrivateKey as `0x${string}`,
-          startIndex: '0',
-          count: Math.min(scanCount, 256),
-          nonZeroOnly: true,
-          rpcUrl: getRpcUrl(),
-        });
-        const candidates = balances.filter((b) => BigInt(b.usdcAtomic) >= requiredAtomic);
-        if (candidates.length > 0) {
-          const { receipts } = listX402Receipts({ limit: 500 });
-          const labeled = candidates.map((c) => {
-            const receipt = receipts.find((r) => r.payerIndex === c.payerIndex);
-            return {
-              payerIndex: c.payerIndex,
-              payerAddress: c.payerAddress,
-              usdc: c.usdc,
-              usdcAtomic: c.usdcAtomic,
-              fundedFor: receipt?.url ?? null,
-            };
-          });
+      // Counter-independent discovery of every payer EOA still holding USDC.
+      const { payers, truncated } = await discoverFundedPayers({
+        rootPrivateKey: rootPrivateKey as `0x${string}`,
+        rpcUrl: getRpcUrl(),
+      });
+
+      // A payer already holding the full price can be reused for free — ask the
+      // caller to confirm rather than silently withdrawing again.
+      const sufficient = payers.filter((p) => BigInt(p.usdcAtomic) >= requiredAtomic);
+      if (sufficient.length > 0) {
+        const { receipts } = listX402Receipts({ limit: 500 });
+        const labeled = sufficient.map((c) => {
+          const receipt = receipts.find((r) => r.payerIndex === c.payerIndex);
           return {
-            action: 'reuse_available',
-            success: false,
-            url: options.url,
-            requiredAmount: quote.amount,
-            requiredAmountAtomic: quote.amountAtomic,
-            candidates: labeled,
-            message:
-              `Found ${labeled.length} already-funded payer(s) holding enough USDC for this ${quote.amount} USDC payment. ` +
-              'Re-call veil_pay_x402 with payerIndex set to reuse one (no new withdrawal), or forceFresh: true to withdraw to a new payer.',
-            type: 'x402_payment',
+            payerIndex: c.payerIndex,
+            payerAddress: c.payerAddress,
+            usdc: c.usdc,
+            usdcAtomic: c.usdcAtomic,
+            fundedFor: receipt?.url ?? null,
           };
-        }
+        });
+        return {
+          action: 'reuse_available',
+          success: false,
+          url: options.url,
+          requiredAmount: quote.amount,
+          requiredAmountAtomic: quote.amountAtomic,
+          candidates: labeled,
+          truncatedScan: truncated,
+          message:
+            `Found ${labeled.length} already-funded payer(s) holding enough USDC for this ${quote.amount} USDC payment. ` +
+            'Re-call veil_pay_x402 with payerIndex set to reuse one (no new withdrawal), or forceFresh: true to withdraw to a new payer.',
+          type: 'x402_payment',
+        };
+      }
+
+      // No payer holds the full price. If stranded dust exists, drain the largest
+      // fragment by topping up only the shortfall, driving that payer toward zero
+      // (keeps funds in the x402 system; no public exit, no payer-to-payer link).
+      const dust = [...payers]
+        .filter((p) => BigInt(p.usdcAtomic) > 0n)
+        .sort((a, b) => (BigInt(b.usdcAtomic) > BigInt(a.usdcAtomic) ? 1 : -1));
+      if (dust.length > 0) {
+        payerIndex = BigInt(dust[0].payerIndex);
+        reuseMode = 'topup';
+        drainedDust = true;
+      } else {
+        payerIndex = reserveX402PayerIndex();
       }
     }
-
-    payerIndex = reserveX402PayerIndex();
   }
 
   // Capture the funded state so a receipt exists even if a later step (signing,
@@ -846,7 +934,7 @@ export async function payX402(options: {
       rpcUrl: getRpcUrl(),
       relayUrl: getX402RelayUrl(),
       maxPayment: String(effectiveCap),
-      reuseExistingBalance: reusePayer,
+      reuseExistingBalance: reuseMode,
       init,
       onPayerFunded: (info) => {
         fundedInfo = info;
@@ -922,7 +1010,8 @@ export async function payX402(options: {
   return {
     success,
     settled,
-    reused: reusePayer,
+    reused: reuseMode !== false,
+    drainedDust,
     status: result.response.status,
     url: options.url,
     maxPayment: String(effectiveCap),
@@ -960,6 +1049,7 @@ export async function getX402PayerBalanceList(options: {
   startIndex?: string;
   count?: number;
   nonZeroOnly?: boolean;
+  discover?: boolean;
 }): Promise<Record<string, unknown>> {
   const keypair = requireKeypair();
   const rootPrivateKey = keypair.privkey;
@@ -967,13 +1057,26 @@ export async function getX402PayerBalanceList(options: {
     throw new Error('VEIL_KEY missing. Call veil_init_keypair first or provide VEIL_KEY in .env.veil.');
   }
 
-  const balances = await getX402PayerBalances({
-    rootPrivateKey: rootPrivateKey as `0x${string}`,
-    startIndex: options.startIndex ?? '0',
-    count: options.count ?? 16,
-    nonZeroOnly: options.nonZeroOnly ?? false,
-    rpcUrl: getRpcUrl(),
-  });
+  // Discover mode ignores startIndex/count and finds every funded payer regardless
+  // of the local X402_PAYER_INDEX counter (gap-limit scan from on-chain balances).
+  let balances: X402PayerBalance[];
+  let truncated = false;
+  if (options.discover) {
+    const result = await discoverFundedPayers({
+      rootPrivateKey: rootPrivateKey as `0x${string}`,
+      rpcUrl: getRpcUrl(),
+    });
+    balances = result.payers;
+    truncated = result.truncated;
+  } else {
+    balances = await getX402PayerBalances({
+      rootPrivateKey: rootPrivateKey as `0x${string}`,
+      startIndex: options.startIndex ?? '0',
+      count: options.count ?? 16,
+      nonZeroOnly: options.nonZeroOnly ?? false,
+      rpcUrl: getRpcUrl(),
+    });
+  }
 
   let totalAtomic = 0n;
   for (const balance of balances) {
@@ -982,11 +1085,13 @@ export async function getX402PayerBalanceList(options: {
 
   return {
     type: 'x402_payer_balances',
-    startIndex: options.startIndex ?? '0',
+    mode: options.discover ? 'discover' : 'range',
+    startIndex: options.discover ? '0' : options.startIndex ?? '0',
     count: balances.length,
+    truncatedScan: truncated,
     totalUsdc: formatUnits(totalAtomic, POOL_CONFIG.usdc.decimals),
     totalUsdcAtomic: totalAtomic.toString(),
-    note: 'Funds left on a payer EOA are recoverable from VEIL_KEY + payerIndex. This MCP does not yet sweep payers automatically.',
+    note: 'Stranded payer USDC is reused automatically: veil_pay_x402 tops up the largest funded payer (withdrawing only the shortfall) before minting a fresh one, draining dust toward zero. Recoverable any time from VEIL_KEY + payerIndex.',
     payers: balances,
   };
 }
