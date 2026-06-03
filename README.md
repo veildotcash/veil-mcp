@@ -24,7 +24,7 @@ Run Veil MCP beside Base MCP. Tell your agent (Base MCP, a Hermes agent, or any 
 }
 ```
 
-Use npm, not a GitHub install: the npm package is versioned and resolves its `@veil-cash/sdk` dependency automatically. Pin a version with `@veil-cash/mcp@0.2.0` for reproducibility. (The GitHub form `npx -y github:veildotcash/veil-mcp` is for development/nightly only and adds startup latency, since npm must resolve the GitHub package before the client can discover tools.)
+Use npm, not a GitHub install: the npm package is versioned and resolves its `@veil-cash/sdk` dependency automatically. Pin a version with `@veil-cash/mcp@0.2.1` for reproducibility. (The GitHub form `npx -y github:veildotcash/veil-mcp` is for development/nightly only and adds startup latency, since npm must resolve the GitHub package before the client can discover tools.)
 
 For clients that start tools during session startup, you can instead install the CLI globally and launch `veil-mcp` directly — this avoids per-launch npm resolution:
 
@@ -115,9 +115,18 @@ Configure `RPC_URL` with a dedicated Base RPC endpoint for reliable Veil reads. 
 
 Use `veil_init_keypair` to generate a random local Veil keypair. It writes `.env.veil` and returns only the public deposit key.
 
-## Agent Skill
+## Agent Skill & Base MCP Plugin
 
-This package includes the MCP-specific agent skill in `skills/veil-base-mcp`. If an agent also discovers the `@veil-cash/sdk` skill, treat that SDK skill as CLI-specific. For Base MCP integrations, follow `skills/veil-base-mcp`: Veil MCP prepares public wallet calldata, Base MCP submits it, and private withdraw/transfer actions go through the Veil relay only after explicit confirmation.
+This package includes a [Base MCP plugin spec](https://github.com/base/skills/blob/master/skills/base-mcp/references/plugin-spec.md)-aligned agent skill in `skills/veil-base-mcp/`:
+
+- **`skills/veil-base-mcp/SKILL.md`** — skill entry point and routing summary
+- **`skills/veil-base-mcp/plugins/veil.md`** — full plugin (`integration: external-mcp`, stdio-only v1): Detection, Installation, Surface Routing, Orchestration, Submission (`send_calls` for public flows, `none` for private relay), Example Prompts, Risks & Warnings
+
+Run Veil MCP beside Base MCP. Public register/deposit calldata goes to Base MCP `send_calls`; private withdraw, transfer, and x402 go through the Veil relay with explicit user confirmation.
+
+If an agent also discovers the `@veil-cash/sdk` skill, treat that SDK skill as CLI-specific. For Base MCP integrations, follow `skills/veil-base-mcp/plugins/veil.md`.
+
+When submitting upstream to Base, copy `plugins/veil.md` to `skills/base-mcp/plugins/veil.md` in the [base/skills](https://github.com/base/skills) repository.
 
 ## Tools
 

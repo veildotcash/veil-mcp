@@ -1,6 +1,6 @@
 ---
 name: veil-base-mcp
-version: 0.1.0
+version: 0.2.1
 description: >
   Use Veil MCP with Base MCP to register and deposit into Veil Cash on Base,
   read balances/status, and submit explicitly confirmed private withdrawals,
@@ -21,24 +21,36 @@ triggers:
   - pay x402
   - private x402
   - base mcp veil
+  - shielded payments
+  - privacy pool
 ---
 
 # Veil Base MCP
 
 Use this skill when the user wants to use Veil Cash through Base MCP.
 
-Read the plugin spec at `plugins/veil.md` before calling tools. Public wallet actions must go through Base MCP `send_calls`. Private relay and x402 payment actions require explicit user confirmation.
+Read the plugin at `plugins/veil.md` before calling tools. It follows the [Base MCP plugin spec](https://github.com/base/skills/blob/master/skills/base-mcp/references/plugin-spec.md) (`integration: external-mcp`, stdio-only v1 — no hosted HTTP URL).
 
-If the `@veil-cash/sdk` skill is also present, treat it as CLI-specific reference only. For this integration, do not use CLI signing modes, Bankr flows, or direct SDK transaction submission in place of Base MCP.
+## Routing summary
 
-Important behavior carried over from the Veil CLI skill:
+| Flow | Veil MCP | Base MCP submission |
+| --- | --- | --- |
+| Register / deposit | `veil_prepare_*` | `send_calls` |
+| Read (status, balances, quotes) | read tools | `none` |
+| Withdraw / transfer / x402 / consolidate | relay tools (`confirm: true`) | `none` |
 
-- All operations target Base mainnet.
-- A dedicated Base `RPC_URL` is recommended because Merkle tree, event, queue, and balance reads can hit public RPC rate limits. It does not replace Base MCP.
-- Deposit amounts are net amounts; fee handling is built into the prepare tool.
-- Deposits enter a queue before becoming private balance (typically 8-12 minutes); `veil_deposit_status` reports queue position and ETA.
-- Private transfers require the recipient to already be registered with Veil.
-- x402 payments use private USDC, reserve a fresh deterministic payer index, and support standard Base USDC x402 (GET and POST) resources. Always set a tight `maxPayment` cap (default and hard cap 10 USDC). `veil_pay_x402` pre-flights the endpoint and withdraws nothing if it does not return 402; use `veil_x402_quote` to validate the request and price first. If a funded payer with enough USDC already exists it returns `reuse_available` so the user can reuse it via `payerIndex` (no new withdrawal) or `forceFresh: true` to withdraw anew. Each payment writes a local receipt readable via `veil_x402_receipts`, and `veil_x402_payer_balances` surfaces funds left on a payer.
-- A single transaction consumes at most 16 input UTXOs; when balances fragment, use `veil_consolidate_utxos` to merge notes via a private self-transfer.
-- Agents should summarize actions in plain language rather than presenting raw calldata.
-- Never expose `VEIL_KEY`, proof internals, nullifiers, encrypted outputs, payer private keys, or signatures.
+Complete Base MCP onboarding first (`get_wallets` → use `baseAccount.address` as `owner`). Install the local Veil MCP (stdio) alongside Base MCP if no `veil_*` tools are exposed — see `plugins/veil.md` § Installation. Veil does not offer a hosted HTTP MCP; keys stay on the user's machine.
+
+If the `@veil-cash/sdk` skill is also present, treat it as CLI-specific reference only. Do not use CLI signing modes, Bankr flows, or direct SDK transaction submission in place of this plugin.
+
+## Quick reference
+
+- **Chain:** Base mainnet only (`base`, chain id `8453`).
+- **Keys:** Local `VEIL_KEY` via `veil_init_keypair` or server env; Base Account cannot derive Veil keys in v1.
+- **Deposits:** Net amounts; 0.3% fee in calldata; queue ~8–12 min before private balance.
+- **Private writes:** Require explicit user confirmation and `confirm: true`.
+- **x402:** Quote first; tight `maxPayment` (hard cap 10 USDC); handle `reuse_available`.
+- **UTXOs:** Max 16 inputs per tx; use `veil_consolidate_utxos` when fragmented.
+- **Safety:** Never expose `VEIL_KEY`, proof internals, or signatures. Summarize actions in plain language.
+
+Full orchestration, submission mapping, example prompts, and risks: `plugins/veil.md`.
