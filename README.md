@@ -4,6 +4,42 @@ Local MCP server for Veil Cash on Base.
 
 This server wraps `@veil-cash/sdk` and exposes Base MCP-compatible tools for agents. Public wallet actions return unsigned calldata for Base MCP `send_calls`; private actions use the local Veil key and submit through the Veil relay only when explicitly confirmed.
 
+## Quick install
+
+Tell your agent (Base MCP, a Hermes agent, or any MCP client):
+
+> Add the Veil Cash MCP server, published on npm as `@veil-cash/mcp`, to your `mcpServers`. It runs alongside Base MCP: Veil prepares private/calldata actions, Base MCP submits public transactions via `send_calls`. Reconnect MCP servers after adding it.
+
+```json
+{
+  "mcpServers": {
+    "veil": {
+      "command": "npx",
+      "args": ["-y", "@veil-cash/mcp"]
+    }
+  }
+}
+```
+
+The server starts with read-only tools (`veil_status`, `veil_x402_quote`, `veil_get_balances`) and **no configuration**. To enable the fund-moving tools (`veil_pay_x402`, `veil_withdraw`, `veil_transfer`), provide `VEIL_KEY` (and optionally a dedicated `RPC_URL`):
+
+```json
+{
+  "mcpServers": {
+    "veil": {
+      "command": "npx",
+      "args": ["-y", "@veil-cash/mcp"],
+      "env": {
+        "VEIL_KEY": "0x...",
+        "RPC_URL": "https://your-base-rpc"
+      }
+    }
+  }
+}
+```
+
+Use npm (above), not a GitHub install: the npm package is versioned and resolves its `@veil-cash/sdk` dependency automatically. Pin a version with `@veil-cash/mcp@0.2.0` for reproducibility.
+
 ## MCP Config
 
 Run Veil MCP beside Base MCP. For Hermes and other MCP clients that start tools during session startup, install the CLI globally so the client can launch `veil-mcp` directly:
