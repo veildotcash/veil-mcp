@@ -60,8 +60,16 @@ veil_status({ owner? })
 veil_get_balances({ owner, pool?: "eth" | "usdc" | "all" })
 veil_deposit_status({ owner, pool: "eth" | "usdc", nonce })
 veil_wait_for_deposit({ owner, pool: "eth" | "usdc", nonce, timeoutSeconds?, intervalSeconds? })
+veil_x402_quote({ url, method?, body?, headers?, maxPayment? })
+veil_x402_receipts({ limit? })
+veil_x402_payer_balances({ startIndex?, count?, nonZeroOnly? })
 veil_subaccount_status({ slot })
 ```
+
+`veil_get_balances` returns a per-pool `fragmentation` summary (`unspentCount`,
+`largestUtxo`, `smallestUtxo`, `needsConsolidation`). `veil_deposit_status`
+reports `queuePosition`, `queueLength`, and `typicalProcessingMinutes` (`8-12`)
+for pending deposits.
 
 Use `owner` from Base MCP `get_wallets`.
 
@@ -87,7 +95,7 @@ For USDC deposits, the calls are ordered approval first, then deposit. Submit th
 
 If `veil_prepare_register` returns `action: "alreadyRegistered"` and `calls: []`, do not call `send_calls`; continue to deposit or balance checks. If it errors because a different deposit key is already registered, ask the user before retrying with `force: true`.
 
-Deposit amounts are net amounts. The prepare tool checks whether the owner has a free daily deposit slot; if not, it includes the protocol fee in the prepared calldata. Minimums are `0.01 ETH` and `10 USDC`.
+Deposit amounts are net amounts. The prepare tool includes the 0.3% protocol fee in the prepared calldata. Minimums are `0.01 ETH` and `10 USDC`.
 
 ## send_calls Mapping
 
@@ -131,18 +139,69 @@ Deposit:
 8. Veil MCP veil_deposit_status({ owner, pool, nonce }) until status is not "pending"
 ```
 
-After Base MCP confirms the transaction, the funds are not immediately private. They enter the Veil queue first. Typical queue processing is around `10-15 minutes`. Report this lifecycle clearly: submitted on Base, pending in queue, then accepted into private balance.
+After Base MCP confirms the transaction, the funds are not immediately private. They enter the Veil queue first. Typical queue processing is around `8-12 minutes`. Use `veil_deposit_status` `queuePosition` and `typicalProcessingMinutes` to set expectations. Report this lifecycle clearly: submitted on Base, pending in queue, then accepted into private balance.
 
-Private withdraw or transfer:
+Private withdraw, transfer, x402 payment, or consolidation:
 
 ```text
 1. Ask the user to explicitly confirm the relay-backed private action.
 2. For private transfers, verify the recipient is registered if that is not already known.
-3. Call veil_withdraw(..., confirm: true) or veil_transfer(..., confirm: true).
-4. Report only transaction hash, block number, asset, amount, recipient, and success.
+3. For x402, optionally veil_x402_quote first to validate the request and price, then confirm the URL, the maxPayment cap, and that private USDC will be withdrawn to a fresh payer EOA. If veil_pay_x402 returns action "reuse_available", ask the user whether to reuse a funded payer (re-call with payerIndex) or withdraw anew (forceFresh: true).
+4. Call veil_withdraw(..., confirm: true), veil_transfer(..., confirm: true), veil_pay_x402(..., confirm: true), or veil_consolidate_utxos(..., confirm: true).
+5. Report only public transaction metadata, amount, payer address, response status/body, and success.
 ```
 
 Do not route private relay actions through Base MCP `send_calls`.
+
+x402 payments:
+
+```text
+veil_x402_quote({ url, method?, body?, headers?, maxPayment? })
+veil_pay_x402({ url, method?, body?, headers?, maxPayment?, payerIndex?, forceFresh?, confirm })
+```
+
+`veil_pay_x402` supports Coinbase-compatible x402 v2 `exact` Base USDC resources.
+It reserves and increments `X402_PAYER_INDEX` in `.env.veil`, withdraws the exact
+amount from private USDC to a fresh deterministic payer EOA, then signs the x402
+payment from that EOA. Both GET and POST resources are supported: set
+`method: "POST"` and pass `body` (a JSON object sent as `application/json`, or a
+raw string) for POST endpoints, with optional `headers`. `body` is only valid
+with POST. Always set a tight `maxPayment` cap (decimal USDC string like
+`"0.10"`); payment is rejected before any funds move if the resource demands
+more. The cap defaults to and is hard-capped at `10` USDC. Configure
+`X402_RELAY_URL` to the relay x402 route base, for example
+`https://veil-relay.example/x402`; if only `RELAY_URL` is set, Veil MCP appends
+`/x402`.
+
+To avoid burning a withdrawal on a malformed request, `veil_pay_x402` pre-flights
+the endpoint first. If the unpaid probe is not `402` it returns
+`action: "endpoint_error"` (status + body) and withdraws nothing. Use
+`veil_x402_quote(...)` to validate the request and see the price without funding
+or paying. A merchant that validates the body only after payment still returns
+`402` to the probe; the funded payer is then reusable.
+
+Before a fresh withdrawal, `veil_pay_x402` scans already-funded payer EOAs. If one
+holds enough USDC it returns `action: "reuse_available"` with candidate payer
+indexes. Re-call with `payerIndex` to pay from that funded payer with no new
+withdrawal, or `forceFresh: true` to skip the scan and withdraw to a new payer.
+Reuse links both attempts to the same public EOA, so it is offered as a consented
+choice rather than done silently.
+
+Each payment writes a local receipt. Use `veil_x402_receipts({ limit? })` for
+spend history and total USDC spent, and `veil_x402_payer_balances({ startIndex?,
+count?, nonZeroOnly? })` to find USDC left on a payer after a failed payment.
+
+UTXO consolidation:
+
+```text
+veil_consolidate_utxos({ asset, amount?, confirm })
+```
+
+A single transaction consumes at most 16 input UTXOs. When `veil_get_balances`
+reports `fragmentation.needsConsolidation: true`, the full balance cannot be
+spent in one transaction. `veil_consolidate_utxos` merges notes via a private
+self-transfer. Omit `amount` to merge as much as possible (up to 16 notes) in one
+round; repeat while the response reports `needsAnotherRound: true`.
 
 Subaccounts:
 
@@ -158,13 +217,14 @@ Subaccounts:
 - Missing deposit key: call `veil_init_keypair`; do not invent or request raw private key material from the user.
 - Different registered deposit key: ask before retrying `veil_prepare_register` with `force: true`, because it prepares a key rotation.
 - Invalid amount: ETH minimum is `0.01`; USDC minimum is `10`.
+- x402 unsupported requirement: only Base USDC `exact` is supported; reject other assets, networks, or schemes.
 - RPC/network failure: retry when appropriate and suggest setting `RPC_URL` to a dedicated Base RPC, especially when Merkle tree or event reads appear rate-limited.
 - Relay failure: check `veil_status` relay health and do not resubmit private actions without user confirmation.
 
 ## Safety Rules
 
 - Never ask Veil MCP to reveal `VEIL_KEY`.
-- Never echo private proof internals, nullifiers, encrypted outputs, or signatures.
+- Never echo private proof internals, nullifiers, encrypted outputs, payer private keys, or signatures.
 - Do not show raw calldata as the final user-facing answer. Summarize asset, amount, fee, status, request id, transaction hash, and nonce.
 - Confirm symbol, amount, recipient, and whether the action uses Base MCP approval or the Veil relay before any write.
 - If a user asks to recover, sweep, deploy, or merge subaccounts, explain that v1 only supports subaccount status.

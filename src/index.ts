@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import './crypto-polyfill.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -8,12 +9,17 @@ import { initRandomKeypair } from './key-store.js';
 import { jsonResult } from './result.js';
 import { addressSchema, assetSchema, poolOrAllSchema, poolSchema } from './validation.js';
 import {
+  consolidateUtxos,
   executeTransfer,
   executeWithdraw,
   getBalances,
   getDepositStatus,
+  getX402PayerBalanceList,
+  getX402Receipts,
+  payX402,
   prepareDeposit,
   prepareRegister,
+  quoteX402,
   subaccountStatus,
   veilStatus,
   waitForDeposit,
@@ -177,6 +183,138 @@ server.registerTool(
   },
   async ({ asset, amount, recipient, confirm }) =>
     jsonResult(await executeTransfer({ asset, amount, recipient: recipient as `0x${string}`, confirm })),
+);
+
+server.registerTool(
+  'veil_pay_x402',
+  {
+    title: 'Pay x402 Resource',
+    description:
+      'Pay a Coinbase-compatible x402 resource from private Veil USDC. Supports GET and POST resources. Requires explicit user intent and confirm: true because it moves private USDC and submits payment. Payer selection (unless forceFresh or an explicit payerIndex is given): if a funded payer already holds the full price it is surfaced for free reuse; otherwise stranded dust is drained by topping up the largest funded payer with only the shortfall; otherwise a fresh payer is minted. Set a tight maxPayment cap; the payment is rejected if the resource demands more.',
+    inputSchema: {
+      url: z.string().url().describe('x402-protected resource URL.'),
+      method: z
+        .enum(['GET', 'POST'])
+        .default('GET')
+        .describe('HTTP method for the resource request.'),
+      body: z
+        .union([z.string(), z.record(z.string(), z.unknown())])
+        .optional()
+        .describe('Request body for POST: a JSON object (sent as application/json) or a raw string. Only valid with method POST.'),
+      headers: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe('Optional custom request headers.'),
+      maxPayment: z
+        .string()
+        .regex(/^\d+(\.\d+)?$/, 'maxPayment must be a positive USDC decimal string, e.g. "0.10".')
+        .optional()
+        .describe('Maximum USDC to pay, as a decimal string like "0.10". Defaults to and is hard-capped at 10 USDC.'),
+      payerIndex: z
+        .string()
+        .regex(/^\d+$/, 'payerIndex must be a non-negative integer string.')
+        .optional()
+        .describe('Reuse a specific payer EOA at this index (top-up mode: pays from its balance, withdrawing only any shortfall). Use after a reuse_available result, to retry a funded-but-failed payment, or to deliberately drain a chosen payer.'),
+      forceFresh: z
+        .boolean()
+        .default(false)
+        .describe('Skip the funded-payer reuse check and always withdraw to a new payer EOA.'),
+      confirm: z
+        .boolean()
+        .describe('Must be true after the user explicitly confirms private USDC payment.'),
+    },
+  },
+  async ({ url, method, body, headers, maxPayment, payerIndex, forceFresh, confirm }) =>
+    jsonResult(await payX402({ url, method, body, headers, maxPayment, payerIndex, forceFresh, confirm })),
+);
+
+server.registerTool(
+  'veil_x402_quote',
+  {
+    title: 'Quote x402 Resource',
+    description:
+      'Probe an x402 resource WITHOUT funding a payer or paying. Returns the price and payment requirement for a supported 402, or the raw status/body otherwise. Use before veil_pay_x402 to validate the request (method/body/headers) and confirm cost. Note: a merchant that only validates the request body after payment will still return 402 here.',
+    inputSchema: {
+      url: z.string().url().describe('x402-protected resource URL.'),
+      method: z
+        .enum(['GET', 'POST'])
+        .default('GET')
+        .describe('HTTP method for the resource request.'),
+      body: z
+        .union([z.string(), z.record(z.string(), z.unknown())])
+        .optional()
+        .describe('Request body for POST: a JSON object (sent as application/json) or a raw string. Only valid with method POST.'),
+      headers: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe('Optional custom request headers.'),
+      maxPayment: z
+        .string()
+        .regex(/^\d+(\.\d+)?$/, 'maxPayment must be a positive USDC decimal string, e.g. "0.10".')
+        .optional()
+        .describe('Cap to compare the quoted price against. Defaults to and is hard-capped at 10 USDC.'),
+    },
+  },
+  async ({ url, method, body, headers, maxPayment }) =>
+    jsonResult(await quoteX402({ url, method, body, headers, maxPayment })),
+);
+
+server.registerTool(
+  'veil_x402_receipts',
+  {
+    title: 'x402 Spend History',
+    description:
+      'List locally recorded x402 payment receipts (amount, payer address/index, relay and payment tx hashes, settlement status) and total USDC spent. Read-only; reconstructs this agent\'s own spend history.',
+    inputSchema: {
+      limit: z.number().int().min(1).max(500).default(50).describe('Maximum number of most-recent receipts to return.'),
+    },
+  },
+  async ({ limit }) => jsonResult(getX402Receipts({ limit })),
+);
+
+server.registerTool(
+  'veil_x402_payer_balances',
+  {
+    title: 'x402 Payer Balances',
+    description:
+      'Inspect Base USDC balances held by deterministic x402 payer EOAs. Surfaces dust or funds left on a payer after a failed payment. Read-only; does not move funds (veil_pay_x402 reuses/drains them automatically). Use discover: true to find every funded payer regardless of the local index counter; otherwise inspect an explicit startIndex/count range.',
+    inputSchema: {
+      discover: z
+        .boolean()
+        .default(false)
+        .describe('Find every payer EOA still holding USDC via a gap-limit scan, independent of the local X402_PAYER_INDEX counter. Ignores startIndex/count when true.'),
+      startIndex: z
+        .string()
+        .regex(/^\d+$/, 'startIndex must be a non-negative integer string.')
+        .default('0')
+        .describe('First payer index to inspect (range mode only).'),
+      count: z.number().int().min(1).max(256).default(16).describe('How many payer indexes to inspect from startIndex (range mode only).'),
+      nonZeroOnly: z.boolean().default(false).describe('Only return payers that currently hold USDC (range mode only).'),
+    },
+  },
+  async ({ discover, startIndex, count, nonZeroOnly }) =>
+    jsonResult(await getX402PayerBalanceList({ discover, startIndex, count, nonZeroOnly })),
+);
+
+server.registerTool(
+  'veil_consolidate_utxos',
+  {
+    title: 'Consolidate Private UTXOs',
+    description:
+      'Merge fragmented private UTXOs into fewer notes via a self-transfer through the Veil relay. A single transaction consumes at most 16 input UTXOs, so heavy x402 usage can fragment a balance until it cannot be spent in full. Requires explicit user intent and confirm: true. May need multiple rounds when more than 16 UTXOs are unspent.',
+    inputSchema: {
+      asset: assetSchema.describe('Asset to consolidate.'),
+      amount: z
+        .string()
+        .regex(/^\d+(\.\d+)?$/, 'amount must be a positive decimal string.')
+        .optional()
+        .describe('Optional target amount to consolidate. Omit to merge as much as possible (up to 16 notes) in one round.'),
+      confirm: z
+        .boolean()
+        .describe('Must be true after the user explicitly confirms relay submission.'),
+    },
+  },
+  async ({ asset, amount, confirm }) => jsonResult(await consolidateUtxos({ asset, amount, confirm })),
 );
 
 server.registerTool(

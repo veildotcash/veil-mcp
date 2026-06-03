@@ -1,6 +1,6 @@
 {
   "name": "@veil-cash/mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for Veil Cash SDK with Base MCP-compatible calldata preparation",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -55,7 +55,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@veil-cash/sdk": "^0.6.5",
+    "@veil-cash/sdk": "^0.7.0",
     "dotenv": "^17.2.3",
     "viem": "^2.33.3",
     "zod": "^3.25.76"

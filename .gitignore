@@ -2,5 +2,9 @@ node_modules
 dist
 .env
 .env.veil
+.veil-x402-receipts.json
 .DS_Store
 *.log
+
+# Local-only test/dev scripts — not for the public repo
+scripts/
