@@ -1080,6 +1080,9 @@ export async function getX402PayerBalanceList(options: {
   };
 }
 
+const SUBACCOUNT_RETIRED_NOTICE =
+  'Subaccounts are retired. Do not send funds to this forwarder address; it is shown only so existing funds can be recovered.';
+
 export async function subaccountStatus(slot: number): Promise<Record<string, unknown>> {
   const veilKey = getKeyStatus().veilKeyFound ? requireKeypair().privkey : null;
   if (!veilKey) {
@@ -1092,7 +1095,17 @@ export async function subaccountStatus(slot: number): Promise<Record<string, unk
     rpcUrl: getRpcUrl(),
   });
 
+  const hasForwarderFunds = status.balances.eth.balanceWei !== '0' || status.balances.usdc.balanceWei !== '0';
+  const recovery = !hasForwarderFunds
+    ? 'No funds on the forwarder.'
+    : status.deployed
+      ? 'Forwarder holds funds. Recover them with the veil CLI: `veil subaccount recover --slot <n> --asset <eth|usdc> --to <address> --amount <value>`.'
+      : 'Forwarder holds funds but is not deployed. Contact Veil support to have it deployed, then run `veil subaccount recover` with the veil CLI.';
+
   return {
+    retired: true,
+    notice: SUBACCOUNT_RETIRED_NOTICE,
+    recovery,
     slot: status.slot.slot,
     forwarderAddress: status.slot.forwarderAddress,
     childOwner: status.slot.childOwner,

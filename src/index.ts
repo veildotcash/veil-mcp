@@ -29,7 +29,7 @@ loadEnv();
 
 const server = new McpServer({
   name: 'veil-mcp',
-  version: '0.1.0',
+  version: '0.3.0',
 });
 
 server.registerTool(
@@ -320,10 +320,11 @@ server.registerTool(
 server.registerTool(
   'veil_subaccount_status',
   {
-    title: 'Veil Subaccount Status',
-    description: 'Read Veil subaccount forwarder, queue, and private-balance status for a local Veil key slot.',
+    title: 'Veil Subaccount Status (retired)',
+    description:
+      'Recovery-only: read forwarder, queue, and private-balance status for a retired Veil subaccount slot (0-2). Subaccounts are retired; never present the forwarder address as a place to send funds.',
     inputSchema: {
-      slot: z.number().int().min(0).describe('Subaccount slot index.'),
+      slot: z.number().int().min(0).max(2).describe('Subaccount slot index (0-2).'),
     },
   },
   async ({ slot }) => jsonResult(await subaccountStatus(slot)),

@@ -24,7 +24,7 @@ Run Veil MCP beside Base MCP. Tell your agent (Base MCP, a Hermes agent, or any 
 }
 ```
 
-Use npm, not a GitHub install: the npm package is versioned and resolves its `@veil-cash/sdk` dependency automatically. Pin a version with `@veil-cash/mcp@0.2.1` for reproducibility. (The GitHub form `npx -y github:veildotcash/veil-mcp` is for development/nightly only and adds startup latency, since npm must resolve the GitHub package before the client can discover tools.)
+Use npm, not a GitHub install: the npm package is versioned and resolves its `@veil-cash/sdk` dependency automatically. Pin a version with `@veil-cash/mcp@0.3.0` for reproducibility. (The GitHub form `npx -y github:veildotcash/veil-mcp` is for development/nightly only and adds startup latency, since npm must resolve the GitHub package before the client can discover tools.)
 
 For clients that start tools during session startup, you can instead install the CLI globally and launch `veil-mcp` directly — this avoids per-launch npm resolution:
 
@@ -104,7 +104,7 @@ The server loads `.env.veil` first, then `.env`, matching the Veil CLI conventio
 
 | Variable | Purpose |
 | --- | --- |
-| `VEIL_KEY` | Local Veil private key for private balances, withdrawals, transfers, and subaccounts |
+| `VEIL_KEY` | Local Veil private key for private balances, withdrawals, transfers, and retired-subaccount status |
 | `DEPOSIT_KEY` | Public Veil deposit key used for register/deposit calldata |
 | `RPC_URL` | Optional Base RPC URL, defaults to `https://mainnet.base.org` |
 | `RELAY_URL` | Optional Veil relay URL override |
@@ -146,7 +146,7 @@ When submitting upstream to Base, copy `plugins/veil.md` to `skills/base-mcp/plu
 | `veil_x402_quote` | Probe an x402 resource for price/requirement without funding or paying |
 | `veil_x402_receipts` | List local x402 spend history and total USDC spent |
 | `veil_x402_payer_balances` | Inspect USDC left on deterministic x402 payer EOAs |
-| `veil_subaccount_status` | Read subaccount status |
+| `veil_subaccount_status` | Recovery-only status for a retired subaccount slot; the forwarder address must not be funded |
 
 `veil_prepare_register` and `veil_prepare_deposit` return:
 
