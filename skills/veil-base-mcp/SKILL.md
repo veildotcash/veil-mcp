@@ -1,6 +1,6 @@
 ---
 name: veil-base-mcp
-version: 0.2.1
+version: 0.3.0
 description: >
   Use Veil MCP with Base MCP to register and deposit into Veil Cash on Base,
   read balances/status, and submit explicitly confirmed private withdrawals,

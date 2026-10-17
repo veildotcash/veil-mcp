@@ -3,7 +3,7 @@ title: "Veil Cash Plugin"
 description: "Privacy pool on Base via Veil MCP — prepare register/deposit calldata for send_calls; private withdraw, transfer, and x402 via Veil relay."
 tags: [privacy, shielded-payments, agent-commerce]
 name: veil
-version: 0.2.1
+version: 0.3.0
 integration: external-mcp
 chains: [base]
 requires:
@@ -42,7 +42,7 @@ If no Veil tools (e.g. `veil_status`, `veil_prepare_deposit`, `veil_get_balances
 
 Veil MCP is a **local stdio** server, not a hosted HTTP connector. Install it beside Base MCP in the harness MCP config (`command` + `args`, or global `veil-mcp` binary). `requires.externalMcp.url` is `null` by design — do not substitute a remote URL or SDK CLI in place of the local MCP.
 
-Pin a version for reproducibility, e.g. `@veil-cash/mcp@0.2.1`.
+Pin a version for reproducibility, e.g. `@veil-cash/mcp@0.3.0`.
 
 **Recommended (avoids per-launch npm resolution):**
 
@@ -64,7 +64,7 @@ Detect the harness and apply the matching step:
     "base-mcp": { "url": "https://mcp.base.org" },
     "veil": {
       "command": "npx",
-      "args": ["-y", "@veil-cash/mcp@0.2.1"]
+      "args": ["-y", "@veil-cash/mcp@0.3.0"]
     }
   }
 }
@@ -88,7 +88,7 @@ Or, when `veil-mcp` is installed globally:
   "mcpServers": {
     "veil": {
       "command": "npx",
-      "args": ["-y", "@veil-cash/mcp@0.2.1"],
+      "args": ["-y", "@veil-cash/mcp@0.3.0"],
       "env": {
         "VEIL_KEY": "0x...",
         "RPC_URL": "https://your-base-rpc"
@@ -171,7 +171,9 @@ A single transaction consumes at most **16 input UTXOs**. When `veil_get_balance
 
 ### Subaccounts
 
-Valid slots are 0–2. v1 of this plugin exposes status only via `veil_subaccount_status`. If the user asks to deploy, sweep, merge, or recover subaccounts, explain that those flows are not exposed in v1.
+Subaccounts are retired. **Never present a subaccount forwarder address as a place to send funds**, and if the user asks for a subaccount, stealth address, or forwarder to receive funds, explain the feature is retired and use a normal private deposit or transfer instead.
+
+`veil_subaccount_status` (slots 0–2) exists only so users can find funds already in a subaccount. Relay its `notice` and `recovery` fields. Merge and recover are not exposed by this plugin: point the user to the `veil` CLI (`veil subaccount merge` / `veil subaccount recover`). If the forwarder holds funds but is not deployed, the user must contact Veil support to have it deployed first.
 
 ## Submission
 
